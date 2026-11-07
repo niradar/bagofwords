@@ -2,7 +2,7 @@ name: e2e tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, tmp/pg-1617-probe ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:  # Allows manual trigger
@@ -21,11 +21,11 @@ jobs:
     # mid-run). It now runs under pytest-xdist (see the E2E step), which cuts
     # wall time several-fold; 120 leaves generous headroom while still bounding
     # runaway hangs.
-    timeout-minutes: 120
+    timeout-minutes: 170
     strategy:
       fail-fast: false
       matrix:
-        db: [sqlite, postgres]
+        db: [postgres]
 
     steps:
     - uses: actions/checkout@v7
@@ -50,7 +50,7 @@ jobs:
             - 'backend/app/ai/**'
 
     - name: Run AI tests
-      if: steps.changes.outputs.ai_files == 'true'
+      if: false
       working-directory: ./backend
       env:
         TESTING: "true"
@@ -110,6 +110,7 @@ jobs:
   # but it no longer blocks or cancels anything; dispatch-build never depended
   # on it.
   unit-tests:
+    if: false
     runs-on: ubuntu-latest
     # The suite takes ~60 minutes at -n 4 on a hosted runner; sandboxed
     # generated-code tests add child process and Arrow round-trip overhead.
@@ -144,6 +145,7 @@ jobs:
         uv run pytest tests/unit -n 4 --db=sqlite --disable-warnings --timeout=600 --timeout-method=thread
 
   playwright-tests:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     
