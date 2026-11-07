@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, tmp/ci-base ]
   workflow_dispatch:  # Allows manual trigger
 
 # A new push to the same PR supersedes the run in flight — there is no point
