@@ -96,7 +96,7 @@ jobs:
       # container, and a failure in it is a failure of this run, not a gate
       # that skips the whole E2E suite.
       run: |
-        uv run pytest tests/e2e tests/unit/test_fast_artifact_lifecycle.py -n 4 -m "e2e or db" --db=${{ matrix.db }} --durations=50 --disable-warnings --timeout=600 --timeout-method=thread
+        uv run pytest tests/e2e tests/unit/test_fast_artifact_lifecycle.py -n 4 -v -m "e2e or db" --db=${{ matrix.db }} --durations=50 --disable-warnings --timeout=600 --timeout-method=thread
 
   # tests/unit carries no pytest marker, so the -m e2e / -m ai steps above never
   # touched it and nothing else ran it either — two MS Fabric OAuth assertions
