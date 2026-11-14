@@ -58,7 +58,7 @@ class EditArtifactTool(Tool):
                 "you exactly what to correct — fix the ops and call again. If the current code is not in your "
                 "context, call read_artifact first. For a from-scratch redesign, author new source and call "
                 "create_artifact with `code`. To show a file the artifact does not have yet (a new logo, for example), add its "
-                "<BowFile id=\"...\" /> in the ops AND pass its id in `file_ids`; to stop showing one (a replaced logo), delete its <BowFile> and pass its id in `remove_file_ids`, so viewers can no longer open it. For slides, ops edit the python-pptx script; "
+                "<BowFile id=\"...\" /> in the ops AND pass its id in `file_ids`; to stop showing one (a replaced logo), delete its <BowFile> and pass its id in `remove_file_ids`, so viewers can no longer open it, through this or any earlier version of the artifact. For slides, ops edit the python-pptx script; "
                 "validation = the script executes and saves a deck."
             ),
             category="action",
@@ -200,7 +200,7 @@ class EditArtifactTool(Tool):
         # missing, forbidden and wrong-type ids reveals nothing about files
         # this user can't see.
         merged_files: List[Dict[str, Any]] = [f for f in content.get("files") or [] if isinstance(f, dict)]
-        previously_attached = {normalize_file_id(f.get("id")) for f in merged_files}
+        previously_attached = {str(f.get("id")) for f in merged_files}
         removed_file_ids = {normalize_file_id(f) for f in data.remove_file_ids or [] if str(f or "").strip()}
         if removed_file_ids:
             merged_files = [f for f in merged_files if normalize_file_id(f.get("id")) not in removed_file_ids]
@@ -240,8 +240,8 @@ class EditArtifactTool(Tool):
             already_broken = bow_file_literal_ids(code) - previously_attached
             file_errors = file_reference_errors(new_code, {"files": merged_files}, ignore_ids=already_broken)
             if file_errors:
-                unattached = sorted(bow_file_literal_ids(new_code) - attached_ids - already_broken)
-                removed_but_shown = [fid for fid in unattached if fid in removed_file_ids]
+                unattached = sorted(bow_file_literal_ids(new_code) - {str(f.get("id")) for f in merged_files} - already_broken)
+                removed_but_shown = [fid for fid in unattached if normalize_file_id(fid) in removed_file_ids]
                 yield self._fail(
                     artifact, "file_not_attached", file_errors[0],
                     {"file_ids": unattached, "remediation": (
@@ -388,6 +388,12 @@ class EditArtifactTool(Tool):
         new_content: Dict[str, Any] = {"code": new_code, "visualization_ids": merged_viz_ids}
         if merged_files:
             new_content["files"] = merged_files
+        # Files this edit detached. The access checks treat a file as revoked
+        # for this artifact (every version, not just this one) once a version
+        # detaches it, until a later version attaches it again.
+        detached_now = sorted(fid for fid in removed_file_ids if fid in {normalize_file_id(i) for i in previously_attached})
+        if detached_now:
+            new_content["detached_file_ids"] = detached_now
         # The runtime generation travels with the row: a legacy artifact stays
         # legacy across edits (its code was written for that look); a themed
         # one stays themed.

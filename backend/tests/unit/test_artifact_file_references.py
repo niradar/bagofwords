@@ -26,8 +26,9 @@ FID = "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b"
     # A ">" inside an earlier attribute must not end the tag.
     f'<BowFile onLoad={{() => setReady(true)}} id="{FID}" />',
     f'<BowFile alt="a > b" id="{FID}" />',
-    # Ids from the model in another spelling are the same file.
-    f'<BowFile id="{FID.upper()}" />',
+    # Text inside another attribute's value is not the id.
+    f"<BowFile alt='id=\"photo\"' id=\"{FID}\" />",
+    f'<BowFile title="file id=5" id="{FID}" />',
 ])
 def test_a_literal_id_is_found_in_every_tag_shape(tag):
     assert bow_file_literal_ids(f"function App() {{ return <div>{tag}</div> }}") == {FID}
@@ -48,16 +49,23 @@ def test_ids_have_one_spelling():
     assert normalize_file_id("Not-A-Uuid ") == "not-a-uuid"
 
 
+@pytest.mark.parametrize("spelling", [FID.upper(), f" {FID} ", FID.replace("-", ""), "{" + FID + "}"])
+def test_a_reference_spelled_differently_from_the_attached_id_is_an_error(spelling):
+    # The runtime matches <BowFile id> against files[].id with ===.
+    errors = file_reference_errors(f'<BowFile id="{spelling}" />', {"files": [{"id": FID}]})
+    assert len(errors) == 1 and FID in errors[0]
+
+
 def test_an_unattached_reference_is_an_error_and_an_attached_one_is_not():
     code = f'<BowFile id="{FID}" />'
-    assert file_reference_errors(code, {"files": [{"id": FID.upper()}]}) == []
+    assert file_reference_errors(code, {"files": [{"id": FID}]}) == []
     errors = file_reference_errors(code, {"files": []})
     assert len(errors) == 1 and FID in errors[0]
     assert file_reference_errors(code, {}) == errors
 
 
 def test_references_already_broken_can_be_left_alone():
-    assert file_reference_errors(f'<BowFile id="{FID}" />', {"files": []}, ignore_ids=[FID.upper()]) == []
+    assert file_reference_errors(f'<BowFile id="{FID}" />', {"files": []}, ignore_ids=[FID]) == []
 
 
 class _Nested:
@@ -98,13 +106,6 @@ def _lookup(db, ids, monkeypatch, allowed=None):
         return set(allowed if allowed is not None else file_ids)
     monkeypatch.setattr("app.services.file_access_service.run_viewable_file_ids", viewable)
     return asyncio.run(_artifact_files.attachable_files(db, user=None, report=None, organization=None, file_ids=ids))
-
-
-def test_a_failed_lookup_is_retryable_and_rolls_back_only_its_savepoint(monkeypatch):
-    db = _Db(fail=True)
-    with pytest.raises(_artifact_files.FileLookupFailed):
-        _lookup(db, [FID], monkeypatch)
-    assert (db.savepoints, db.rolled_back_to_savepoint) == (1, 1)
 
 
 def test_only_images_and_pdfs_are_attachable(monkeypatch):

@@ -300,8 +300,32 @@ def _jsx_tag_body(src: str, start: int) -> str:
 
 
 def _jsx_prop(body: str, name: str):
-    """(kind, value) for prop ``name``: ("str", text) for name="…", ("expr", text) for name={…}."""
-    m = re.search(r"(?<![\w-])" + re.escape(name) + r"\s*=\s*", body)
+    """(kind, value) for prop ``name``: ("str", text) for name="…", ("expr", text) for name={…}.
+
+    Only a top-level attribute counts: text inside another attribute's quoted
+    value or {expression} (``alt='id="x"'``) is skipped.
+    """
+    attr = re.compile(r"\s" + re.escape(name) + r"\s*=\s*")
+    depth, quote, i, m = 0, None, 0, None
+    while i < len(body):
+        ch = body[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif depth == 0 and ch.isspace():
+            m = attr.match(body, i)
+            if m:
+                break
+        i += 1
     if not m:
         return None
     rest = body[m.end():]
@@ -333,7 +357,10 @@ def normalize_file_id(value: Any) -> str:
 
 
 def bow_file_literal_ids(code: str) -> set:
-    """Normalised ids that ``<BowFile id=…>`` tags name literally.
+    """Ids that ``<BowFile id=…>`` tags name literally, exactly as written.
+
+    Not normalised: the runtime (``_bowFindFile``) matches them against
+    ``files[].id`` with ``===``, so another spelling shows "File not found".
 
     The tag is read with the JSX-aware helpers, so a ``>`` inside an earlier
     attribute (``onLoad={() => …}``, ``alt="a > b"``) doesn't end it. Only an id
@@ -355,7 +382,7 @@ def bow_file_literal_ids(code: str) -> set:
                 continue
             literal = next(g for g in lit.groups() if g is not None)
         if literal.strip():
-            found.add(normalize_file_id(literal))
+            found.add(literal)
     return found
 
 
@@ -366,10 +393,14 @@ def file_reference_errors(code: str, artifact_data: Dict[str, Any], ignore_ids: 
     edit leave references the page already had alone, so an unrelated edit
     isn't blocked by them.
     """
-    attached = {normalize_file_id(f.get("id")) for f in (artifact_data or {}).get("files") or [] if isinstance(f, dict)}
-    ignored = {normalize_file_id(i) for i in ignore_ids or ()}
+    attached = {str(f.get("id")) for f in (artifact_data or {}).get("files") or [] if isinstance(f, dict)}
+    spelled = {normalize_file_id(a): a for a in attached}
+    ignored = {str(i) for i in ignore_ids or ()}
     missing = sorted(bow_file_literal_ids(code) - attached - ignored)
     return [
+        f'<BowFile id="{fid}" /> spells the attached file\'s id differently; ids must match exactly, so it would show '
+        f'"File not found". Write id="{spelled[normalize_file_id(fid)]}".'
+        if normalize_file_id(fid) in spelled else
         f'<BowFile id="{fid}" /> names a file that is not attached to the artifact, so it would show "File not found". '
         f"Pass its id in `file_ids`, or remove the tag."
         for fid in missing
