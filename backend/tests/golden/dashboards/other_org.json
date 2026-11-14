@@ -326,12 +326,12 @@
     }
    },
    "r": {
-    "body": "#4f1dda2d2d916f9c",
+    "body": "#27479dd208be1081",
     "status": 200
    },
    "r_artifact_detail": {
     "archived_public/dash/v1": {
-     "body": "#97056b5421c5d549",
+     "body": "#b45d5cb834fea8e0",
      "status": 200
     }
    },
@@ -4353,7 +4353,7 @@
     }
    },
    "r": {
-    "body": "#70b0eed7b0b3d72c",
+    "body": "#647fbdaf3a08090e",
     "status": 200
    },
    "r_artifact_detail": {},
@@ -5529,12 +5529,12 @@
     }
    },
    "r": {
-    "body": "#278218e66bf9dfb4",
+    "body": "#44191c34f60957b8",
     "status": 200
    },
    "r_artifact_detail": {
     "report_deleted_at/dash/v1": {
-     "body": "#d6da744d94e0e616",
+     "body": "#c3a3e21da0d9431a",
      "status": 200
     }
    },
@@ -7455,12 +7455,12 @@
     }
    },
    "r": {
-    "body": "#faf7c5709b2c5dd5",
+    "body": "#3147d8c9ae1343f5",
     "status": 200
    },
    "r_artifact_detail": {
     "vis_public/dash/v1": {
-     "body": "#b011c23a0e788195",
+     "body": "#d99604a240b02eef",
      "status": 200
     }
    },
@@ -8131,7 +8131,7 @@
     }
    },
    "r": {
-    "body": "#e876d1c1bce158c1",
+    "body": "#640b3ec2763e8970",
     "status": 200
    },
    "r_artifact_detail": {},

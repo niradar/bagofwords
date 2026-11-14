@@ -122,6 +122,16 @@
     "fileBrowserNoResults": "Nenhum arquivo corresponde a “{q}”.",
     "fileBrowserSummaryKms": "{n} arquivos listados para navegação · as permissões do KMS decidem o que o agente pode pesquisar e ler",
     "fileBrowserSummary": "{n} arquivos no escopo · o agente lê apenas estes · acessos negados são auditados",
+    "fileBrowserRootMessages": "Todas as conversas",
+    "fileBrowserSearchMessages": "Pesquisar mensagens…",
+    "fileBrowserEmptyMessages": "Não há mensagens recentes nas conversas que você pode ver.",
+    "fileBrowserSummaryLive": "{n} mensagens recentes · lidas ao vivo com seu próprio acesso · nada é armazenado",
+    "countMessages": "{n} mensagem | {n} mensagens",
+    "fileBrowserNoResultsMessages": "Nenhuma mensagem corresponde a “{q}”.",
+    "loadingMessages": "Carregando mensagens da origem…",
+    "fileBrowserConnectRequiredMessages": "Conecte sua conta para navegar — esta conexão lê as mensagens com o acesso de cada usuário.",
+    "liveSourceHint": "Pesquisado ao vivo com o acesso de cada usuário — apenas os canais, chats ou e-mails que ele pode ver. Nada é copiado ou indexado.",
+    "liveBadge": "Ao vivo",
     "fileBrowserTruncated": "Mostrando os primeiros {shown} de {total} arquivos — restrinja o escopo da conexão para ver o restante.",
     "fileBrowserOpenInSource": "Abrir na origem",
     "fileBrowserClosePreview": "Fechar pré-visualização",
@@ -471,6 +481,14 @@
       "delivery_skipped": {
         "title": "Alguns destinatários não receberam \"{report}\"",
         "body": "{count} destinatário(s) não receberam este relatório porque ele contém dados específicos de cada usuário: {recipients}"
+      },
+      "access_request": {
+        "title": "{actor} pediu para ver {dashboard}",
+        "body": "{actor} pediu para ver «{dashboard}»."
+      },
+      "access_granted": {
+        "title": "Agora você pode ver {dashboard}",
+        "body": "Sua solicitação para ver «{dashboard}» foi aprovada."
       }
     },
     "checkin": {
@@ -673,7 +691,24 @@
         "network": "O reconhecimento de voz precisa de conexão com a rede.",
         "failed": "A entrada por voz falhou. Tente novamente."
       }
-    }
+    },
+    "slash": {
+      "menuTitle": "Comandos",
+      "compact": {
+        "description": "Resumir turnos anteriores para liberar contexto",
+        "usage": "/compact · /compact <foco> · /compact keep 4",
+        "pending": "Será compactado quando o agente terminar esta execução",
+        "running": "Compactando contexto…",
+        "doneContext": "{turns} turnos compactados · contexto ~{before} → ~{after} tokens",
+        "doneHistory": "{turns} turnos compactados · histórico ~{before} → ~{after} tokens",
+        "alreadyRunning": "A compactação já está em andamento",
+        "failed": "Não foi possível compactar o contexto",
+        "degraded": "resumo alternativo (sem resumo do modelo)",
+        "cancel": "Cancelar",
+        "dismiss": "Dispensar"
+      }
+    },
+    "recent": "Recentes"
   },
   "reports": {
     "title": "Relatórios",
@@ -1171,7 +1206,13 @@
       "scopeHint": "Aplica-se às suas conversas neste navegador."
     },
     "readMore": "Ler mais",
-    "showLess": "Mostrar menos"
+    "showLess": "Mostrar menos",
+    "compactionShowSummary": "Ver o que o agente lembra dos turnos compactados",
+    "compactionSummaryTitle": "Histórico compactado",
+    "compactionSummaryHint": "O agente vê este resumo em vez dos turnos acima da linha.",
+    "compactingContext": "Compactando contexto…",
+    "compactionTurns": "{turns} turnos",
+    "compactionLast": "Última compactação: histórico ~{before} → ~{after} tokens"
   },
   "tools": {
     "common": {
@@ -1767,6 +1808,22 @@
       "filesSkippedSingular": "{count} arquivo ignorado ({reasons})",
       "filesSkippedPlural": "{count} arquivos ignorados ({reasons})"
     },
+    "searchFiles": {
+      "foundIn": "Encontrado em:",
+      "fileName": "nome do arquivo",
+      "page": "página {n}",
+      "sheet": "planilha {name}",
+      "offset": "posição {n}",
+      "partlyIndexed": "Indexado apenas em parte (limite de tamanho)",
+      "noText": "Sem texto pesquisável (digitalizado ou binário)",
+      "notIndexed": "Não foi possível indexar",
+      "indexFulltext": "Índice de texto completo",
+      "indexKeywords": "Índice de palavras-chave",
+      "indexNames": "Correspondência pelo nome do arquivo",
+      "liveScan": "Busca ao vivo",
+      "plusLiveScan": "{index} + busca ao vivo",
+      "indexedAt": "indexado {when}"
+    },
     "listAgentExecutions": {
       "empty": "Nenhuma execução encontrada",
       "failed": "Falha ao carregar as execuções do agente",
@@ -1967,6 +2024,7 @@
     "openPage": "Abrir página",
     "categories": {
       "dataSources": "Agentes",
+      "connectors": "Conectores",
       "queries": "Consultas",
       "files": "Arquivos",
       "tables": "Tabelas",
@@ -1990,9 +2048,10 @@
     "loading": "Carregando...",
     "noRolesFound": "Nenhuma função encontrada",
     "noRolesHint": "Crie uma função para gerenciar permissões.",
-    "system": "sistema",
+    "default": "Padrão",
+    "defaultRoleHint": "Esta é uma função interna. O nome é fixo — personalize as permissões abaixo.",
+    "edit": "Editar",
     "fullAdmin": "Administrador total",
-    "permissionsCount": "{n} permissões",
     "editRole": "Editar função",
     "createRole": "Criar função",
     "nameLabel": "Nome",
@@ -2000,17 +2059,10 @@
     "namePlaceholder": "ex.: Analista",
     "descriptionPlaceholder": "Opcional",
     "fullAdminAccess": "Acesso total de administrador",
-    "fullAdminBypass": "Ignora todas as verificações",
-    "allResources": "Todos os recursos",
-    "orgWidePermissions": "Permissões em toda a organização",
-    "ds": "Agente",
-    "addDataSource": "+ Adicionar fonte de dados...",
     "cancel": "Cancelar",
     "save": "Salvar",
     "create": "Criar",
     "confirmDelete": "Excluir a função \"{name}\"?",
-    "toastCreated": "Função criada",
-    "toastUpdated": "Função atualizada",
     "toastDeleted": "Função excluída",
     "failedToLoad": "Falha ao carregar funções",
     "failedToCreate": "Falha ao criar função",
@@ -2038,20 +2090,90 @@
       "create_data_sources": "Criar agentes",
       "manage_connection": "Gerenciar conexão",
       "manage_data_sources": "Gerenciar agentes",
-      "manage_service_accounts": "Gerenciar contas de serviço"
+      "manage_service_accounts": "Gerenciar contas de serviço",
+      "view_code": "Ver código gerado",
+      "run_custom_code": "Editar e executar código personalizado"
     },
-    "addAgent": "+ Adicionar agente...",
-    "advancedPermissions": "Permissões avançadas",
-    "tiers": {
-      "query": "Pode consultar",
-      "queryHint": "Fazer perguntas a este agente",
+    "delete": "Excluir",
+    "duplicate": "Duplicar",
+    "copyOf": "Cópia de {name}",
+    "loadingRole": "Carregando função…",
+    "loadFailed": "Não foi possível carregar agentes, conexões e modelos.",
+    "retry": "Tentar novamente",
+    "toastCreatedNamed": "{name} criada",
+    "toastUpdatedNamed": "{name} salva",
+    "moreActions": "Mais ações",
+    "tabs": {
+      "permissions": "Permissões",
+      "access": "Acesso"
+    },
+    "groups": {
+      "agents": "Agentes e dados",
+      "knowledge": "Conhecimento dos agentes",
+      "code": "Código",
+      "admin": "Administração",
+      "other": "Outros"
+    },
+    "permissionHints": {
+      "create_data_source": "Criar agentes nas conexões que podem usar",
+      "create_connections": "Adicionar conexões de dados",
+      "manage_connections": "Editar, testar e excluir qualquer conexão",
+      "manage_instructions": "Editar as instruções de todos os agentes",
+      "manage_entities": "Definir tabelas, métricas e termos em todos os agentes",
+      "manage_evals": "Criar e executar avaliações em todos os agentes",
+      "view_code": "Ver o SQL e o Python que os agentes escrevem",
+      "run_custom_code": "Editar e executar código em relatórios",
+      "manage_members": "Convidar pessoas e alterar suas funções",
+      "manage_service_accounts": "Criar chaves de API",
+      "manage_settings": "Alterar as configurações da organização",
+      "manage_llm": "Configurar provedores e modelos de LLM",
+      "view_audit_logs": "Ver quem fez o quê e quando",
+      "manage_identity_providers": "Configurar login único (SSO)"
+    },
+    "fullAdminHint": "Pode fazer tudo na organização",
+    "fullAdminAccessTab": "O acesso total de administrador inclui todos os agentes, conexões e modelos.",
+    "includedWith": "Incluído com {name}",
+    "searchResources": "Pesquisar…",
+    "addAccess": "Adicionar agente, conexão ou modelo",
+    "accessEmpty": "Ainda não há agentes, conexões ou modelos. Agentes públicos estão sempre disponíveis.",
+    "publicAgents": "{n} agentes públicos estão disponíveis para todos.",
+    "types": {
+      "data_source": "Agente",
+      "connection": "Conexão",
+      "llm_model": "Modelo"
+    },
+    "levels": {
+      "use": "Pode usar",
       "manage": "Pode gerenciar",
-      "manageHint": "Editar instruções, entidades, avaliações, configurações e membros"
+      "build": "Pode criar agentes",
+      "custom": "Personalizado"
     },
-    "modelAccess": "Acesso a modelos",
-    "modelAccessHint": "Modelos restritos",
-    "noRestrictedModels": "Nenhum modelo restrito",
-    "connection": "Conexão"
+    "removeAccess": "Remover",
+    "meta": {
+      "permissionsOne": "1 permissão",
+      "permissionsMany": "{n} permissões",
+      "agentsOne": "1 agente",
+      "agentsMany": "{n} agentes",
+      "connectionsOne": "1 conexão",
+      "connectionsMany": "{n} conexões",
+      "modelsOne": "1 modelo",
+      "modelsMany": "{n} modelos",
+      "everything": "Todas as permissões"
+    },
+    "resourcePermissions": {
+      "data_source": {
+        "manage": "Gerenciar (inclui tudo)",
+        "manage_instructions": "Editar instruções",
+        "create_entities": "Editar entidades",
+        "manage_evals": "Gerenciar avaliações",
+        "manage_members": "Gerenciar quem pode usá-lo"
+      },
+      "connection": {
+        "manage_connection": "Editar, testar e reindexar",
+        "create_data_sources": "Criar agentes nela",
+        "manage_data_sources": "Gerenciar todos os seus agentes"
+      }
+    }
   },
   "groupsManager": {
     "searchPlaceholder": "Buscar grupos...",
@@ -2252,7 +2374,7 @@
       "integrate": "Integrar",
       "setup": "Configurar",
       "excelAddinName": "Suplemento do Excel",
-      "excelAddinDescription": "Carregue o suplemento Bag of Words diretamente desta instância",
+      "excelAddinDescription": "Carregue o suplemento BOW diretamente desta instância",
       "mcpName": "Servidor BOW MCP",
       "mcpDescription": "Ative o endpoint MCP para integração com assistentes de IA como Cursor, Claude e outros",
       "channels": {
@@ -2547,9 +2669,9 @@
           "trustedConnecting": "Connecting to your trusted app…",
           "authorizationLoading": "Checking the authorization request…",
           "authorizationError": "Unable to authorize",
-          "goBack": "Go back to Bag of Words",
+          "goBack": "Go back to BOW",
           "authorizationTitle": "Authorize access",
-          "wantsAccess": "{name} wants to access your Bag of Words account.",
+          "wantsAccess": "{name} wants to access your BOW account.",
           "permissionsRequested": "Permissions requested",
           "appPermission": "Create and read reports, run completions, and use artifacts under your existing BOW permissions.",
           "mcpPermission": "Use the MCP tool surface under your existing BOW permissions.",
@@ -2574,7 +2696,7 @@
         },
         "excel": {
           "title": "Suplemento do Excel",
-          "subtitle": "Faça o sideload do suplemento Bag of Words diretamente desta instância.",
+          "subtitle": "Faça o sideload do suplemento BOW diretamente desta instância.",
           "loading": "Carregando...",
           "setup": "Configuração",
           "step1": "Baixe o arquivo de manifesto abaixo",
@@ -2622,9 +2744,18 @@
           "subscriptionPlaceholder": "projects/<project>/subscriptions/<name>",
           "subtitle": "Configure e gerencie a integração com o Google Chat para sua organização",
           "title": "Integração com o Google Chat"
+        },
+        "routing": {
+          "title": "Roteamento de canal → agente",
+          "desc": "Direcione um canal para agentes específicos. Um canal sem mapeamento usa o padrão da conexão; sem padrão, ele expõe tudo o que o usuário pode acessar. O roteamento apenas restringe o acesso, nunca concede mais do que o usuário já tem.",
+          "connectionDefaultLabel": "Padrão da conexão",
+          "connectionDefaultDesc": "Usado para canais sem mapeamento próprio.",
+          "pickerPlaceholder": "Escolher agentes…",
+          "channelsHeading": "Canais",
+          "noChannelsYet": "Ainda não há canais. Mencione o bot em um canal e ele aparecerá aqui, ou adicione um por id abaixo."
         }
       },
-      "emptyTitle": "Faça o Bag of Words funcionar com suas ferramentas",
+      "emptyTitle": "Faça o BOW funcionar com suas ferramentas",
       "emptySubtitle": "Conecte Slack, Teams, e-mail e mais para que sua equipe possa alcançar o analista de IA onde já trabalha. Escolha uma integração para começar.",
       "selectHint": "Selecione uma integração",
       "slackDescription": "Permita que sua equipe converse com o analista de IA a partir de canais e DMs do Slack.",
@@ -2714,14 +2845,18 @@
       "attributesInviteHint": "Opcional. Identifica este membro em outros sistemas, ex.: seu usuário do Qlik ou papel no banco de dados.",
       "attributesSaved": "Atributos salvos",
       "attributesSaveFailed": "Falha ao salvar os atributos",
-      "importAttributesHint": "Adicione colunas {column} para definir atributos, ex.: {example}. Uma célula vazia mantém o atributo inalterado."
+      "importAttributesHint": "Adicione colunas {column} para definir atributos, ex.: {example}. Uma célula vazia mantém o atributo inalterado.",
+      "defaultRoleHint": "Preenche a função ao adicionar ou convidar um membro.",
+      "defaultRoleSaved": "Função padrão salva",
+      "defaultRoleFailed": "Falha ao salvar a função padrão",
+      "defaultRoleShort": "Função padrão"
     },
     "organizationName": "Nome da organização",
     "organizationIcon": "Ícone da organização",
     "uploadIcon": "Enviar ícone",
     "iconConstraints": "PNG/JPEG, ≤ 512 KB.",
     "aiAnalystName": "Nome do analista de IA",
-    "showCredit": "Mostrar crédito \"Made with Bag of words\"",
+    "showCredit": "Mostrar crédito \"Made with BOW\"",
     "language": {
       "title": "Idioma",
       "description": "Define o idioma padrão para toda a organização. Os usuários verão a interface neste idioma e a IA responderá nele.",
@@ -3188,6 +3323,10 @@
           "name": "Dias de retenção dos dados de widgets",
           "description": "Número de dias durante os quais os dados dos widgets são mantidos antes da limpeza."
         },
+        "file_retention_days": {
+          "name": "Retenção de arquivos (dias)",
+          "description": "Exclui todas as noites os arquivos mais antigos que este número de dias. Arquivos usados por um painel, arquivos na biblioteca de um agente ou projeto e envios para um relatório agendado são mantidos. 0 mantém os arquivos para sempre."
+        },
         "enable_excel_addin": {
           "name": "Suplemento do Excel",
           "description": "Ativa o suplemento do Excel integrado para que os usuários possam carregar o manifesto diretamente desta instância"
@@ -3219,6 +3358,10 @@
         "enable_demo_data_generation": {
           "name": "Geração de dados de demonstração",
           "description": "No modo de treinamento, administradores que gerenciam conexões podem pedir ao agente que projete e gere um conjunto de dados SQLite fictício e realista para qualquer domínio e depois crie agentes sugeridos sobre ele. As linhas são geradas pelo modelo pequeno padrão."
+        },
+        "allow_access_requests": {
+          "name": "Permitir solicitações de acesso",
+          "description": "Permite que os membros peçam acesso de leitura aos editores de um painel na página sem acesso. Quando desativado, a página apenas indica o proprietário e não é possível enviar novas solicitações; as já enviadas continuam respondíveis."
         }
       }
     },
@@ -3807,7 +3950,7 @@
     "saveIntegration": "Salvar integração",
     "loadFieldsFailed": "Falha ao carregar os campos",
     "integrationReady": "Integração pronta",
-    "integrationReadyDesc": "{name} está conectado e um agente público foi criado. Os usuários podem fazer login para começar a usá-lo.",
+    "integrationReadyDesc": "{name} agora está disponível para todos como conector. Cada pessoa entra com a própria conta.",
     "integrationAgentFailed": "Integração salva, mas a criação do agente falhou",
     "updateIntegrationFailed": "Falha ao atualizar a integração",
     "createIntegrationFailed": "Falha ao criar a integração",
@@ -3948,7 +4091,7 @@
         },
         {
           "title": "Imprima o arquivo de acesso",
-          "body": "Salve como print_access_file.sh e execute. O script aguarda o token e imprime um único arquivo autocontido (URL do servidor API, CA do cluster, token). Verifique com: kubectl --kubeconfig access.yaml get nodes. Se a URL do servidor for privada da sua rede, altere-a para o endereço que esta instância do Bag of Words consegue alcançar."
+          "body": "Salve como print_access_file.sh e execute. O script aguarda o token e imprime um único arquivo autocontido (URL do servidor API, CA do cluster, token). Verifique com: kubectl --kubeconfig access.yaml get nodes. Se a URL do servidor for privada da sua rede, altere-a para o endereço que esta instância do BOW consegue alcançar."
         },
         {
           "title": "Cole abaixo e teste a conexão",
@@ -3958,7 +4101,7 @@
       "mecm": [
         {
           "title": "Conceda à conta acesso de leitura no Configuration Manager",
-          "body": "No console, vá em Administration > Security > Administrative Users, adicione a conta (ou o grupo do AD dela) e atribua a função Read-only Analyst. Os escopos de segurança e as coleções dela definem o que o Bag of Words pode ver."
+          "body": "No console, vá em Administration > Security > Administrative Users, adicione a conta (ou o grupo do AD dela) e atribua a função Read-only Analyst. Os escopos de segurança e as coleções dela definem o que o BOW pode ver."
         },
         {
           "title": "Verifique se o serviço de administração responde",
@@ -4017,6 +4160,11 @@
       "modern": "REST moderno",
       "legacy": "SharePoint 2010",
       "libraryDescription": "Nome da biblioteca de documentos ou * para todas as bibliotecas visíveis. O campo vazio seleciona a biblioteca padrão apenas no modo REST moderno."
+    },
+    "athena": {
+      "databaseDescription": "One Glue database name, or a comma-separated list of names, globs and !-exclusions to index several, e.g. *_db, !billing_db, analytics_history. With several, tables are named database.table.",
+      "tableExcludeTitle": "Table Exclude Pattern",
+      "tableExcludeDescription": "Optional regular expression; tables whose name matches are not indexed, e.g. ^day_\\d{'{'}2{'}'}. Changing it removes newly excluded tables and the agent's selection of them on the next index."
     },
     "qlikOnPrem": {
       "appFilterTitle": "Filtro de aplicações",
@@ -4162,6 +4310,8 @@
     "shell_confirmation.invalid_scope": "Escopo de permissão inválido.",
     "shell_confirmation.report_required": "As permissões de sessão exigem um relatório.",
     "shell_confirmation.rule_mismatch": "Regra de comando inválida, ou o padrão não corresponde a este comando.",
+    "connection.config_invalid": "Invalid connection configuration: {detail}",
+    "connection.athena_mode_switch": "An Athena connection cannot switch between one database and several. Create a new connection instead.",
     "catalog_discovery_incomplete": "A atualização do catálogo falhou porque a descoberta ficou incompleta. O catálogo anterior e as seleções de tabelas foram mantidos.",
     "saml_unavailable": "Configuração de SSO indisponível. Contate seu administrador.",
     "saml_login_failed": "Falha no login SSO. Tente novamente ou contate seu administrador.",
@@ -4282,10 +4432,22 @@
     "APPLICATION_AGENT_FORBIDDEN": "Application has no access to this agent",
     "APPLICATION_MANAGEMENT_FORBIDDEN": "Manage applications directly in BOW",
     "ssh.key_discovery_failed": "Não foi possível buscar a chave. Verifique host, porta e rede ou insira uma chave confiável nas configurações avançadas.",
+    "file.in_use": "O arquivo é usado por um painel",
     "connection.kms_token_format": "O token de API do KMS só pode conter letras, dígitos e sinais de pontuação simples, sem espaços. Copie-o novamente do KMS Lighthouse e cole-o como texto simples.",
     "connection.kms_use_connection_credentials": "Os logins do KMS Lighthouse são salvos na conexão. Abra a conexão e conecte-se a partir dela.",
     "connection.kms_only": "O diagnóstico aplica-se apenas a ligações KMS Lighthouse.",
-    "connection.kms_diagnostics_running": "O diagnóstico já está em curso para esta ligação. Aguarde que termine e tente novamente."
+    "connection.kms_diagnostics_running": "O diagnóstico já está em curso para esta ligação. Aguarde que termine e tente novamente.",
+    "connection.kms_login_rejected": "O KMS Lighthouse não aceitou este início de sessão, por isso não foi guardado. Verifique o nome de utilizador e a palavra-passe, ou o token de API, e tente novamente.",
+    "connection.kms_login_paused": "O KMS Lighthouse recusou recentemente este início de sessão, por isso as novas tentativas com ele estão em pausa durante alguns minutos e não foi guardado. Verifique o início de sessão ou tente novamente mais tarde.",
+    "connection.kms_session_refused": "O KMS Lighthouse aceitou o início de sessão, mas recusou a sessão correspondente, por isso não pode ser usado e não foi guardado. Pergunte ao administrador do KMS se esta conta pode usar a API do KMS.",
+    "access_request.disabled": "As solicitações de acesso estão desativadas para esta organização.",
+    "access_request.not_allowed": "Este painel não precisa de uma solicitação de acesso.",
+    "access_request.already_has_access": "Você já tem acesso a este painel.",
+    "access_request.pending": "Sua solicitação já está pendente.",
+    "access_request.too_soon": "Sua solicitação anterior foi recusada. Você pode pedir novamente mais tarde.",
+    "access_request.no_approvers": "No momento, ninguém pode aprovar solicitações para este painel.",
+    "access_request.not_found": "Esta solicitação não existe mais.",
+    "access_request.already_decided": "Esta solicitação já foi respondida."
   },
   "email": {
     "dashboardShare": {
@@ -4416,7 +4578,7 @@
   },
   "files": {
     "title": "Arquivos",
-    "subtitle": "Gerencie os arquivos da sua organização",
+    "subtitle": "Os arquivos que você enviou e os que o agente criou nos seus relatórios.",
     "file": "Arquivo",
     "metadata": "Metadados",
     "createdAt": "Criado em",
@@ -4425,7 +4587,31 @@
     "metadataFieldsMany": "{count} campos de metadados",
     "metadataTagsOne": "{count} tag de metadados",
     "metadataTagsMany": "{count} tags de metadados",
-    "noMetadata": "Sem metadados"
+    "noMetadata": "Sem metadados",
+    "search": "Pesquisar arquivos",
+    "filterAll": "Todos os arquivos",
+    "filterUploads": "Enviados",
+    "selectAll": "Selecionar tudo",
+    "deleteSelected": "Excluir {count} selecionados",
+    "delete": "Excluir",
+    "download": "Baixar",
+    "empty": "Nenhum arquivo corresponde",
+    "confirmTitleOne": "Excluir este arquivo?",
+    "confirmTitleMany": "Excluir {count} arquivos?",
+    "confirmBody": "Os arquivos excluídos são removidos de todos os relatórios, agentes e projetos que os usam e não podem ser recuperados.",
+    "toastDeletedOne": "Arquivo excluído",
+    "toastDeletedMany": "{count} arquivos excluídos",
+    "toastError": "Não foi possível excluir os arquivos",
+    "toastDownloadError": "Não foi possível baixar o arquivo",
+    "filterAgent": "Agente",
+    "sourceAgent": "Agente",
+    "sourceUpload": "Enviado",
+    "selectedCount": "{count} selecionados",
+    "toastPartialOne": "Não foi possível excluir {count} arquivo",
+    "toastPartialMany": "Não foi possível excluir {count} arquivos",
+    "inUse": "Usado por um painel, por isso não pode ser excluído",
+    "emptyNone": "Ainda não há arquivos",
+    "emptyNoneHint": "Os arquivos que você envia para um relatório e os que o agente cria aparecem aqui."
   },
   "dashboards": {
     "title": "Painéis",
@@ -4800,7 +4986,7 @@
   "onboarding": {
     "loading": "Carregando...",
     "skip": "Pular onboarding",
-    "welcome": "Bem-vindo ao Bag of words! 🎉",
+    "welcome": "Bem-vindo ao BOW! 🎉",
     "welcomeSubtitle": "Converse com seus dados, faça análises aprofundadas e crie painéis em segundos",
     "next": "Próximo",
     "fallbackTitle": "Começar",
@@ -4810,7 +4996,7 @@
     "intro1": "Começar é rápido: basta conectar seu modelo e sua fonte de dados, e você estará pronto para fazer sua primeira pergunta.",
     "intro2": "👉 Vamos configurar tudo!",
     "steps": {
-      "onboardingTitle": "Bem-vindo ao Bag of words! 🎉",
+      "onboardingTitle": "Bem-vindo ao BOW! 🎉",
       "onboardingDescription": "Converse com seus dados, faça análises aprofundadas e crie painéis em segundos",
       "onboardingButton": "Boas-vindas",
       "llmTitle": "Configurar LLM",
@@ -5420,8 +5606,8 @@
     }
   },
   "mcpServerModal": {
-    "title": "Servidor MCP do Bag of words",
-    "subtitle": "Conecte Claude, Cursor ou qualquer cliente MCP para consultar seus dados via Servidor MCP do Bag of words.",
+    "title": "Servidor MCP do BOW",
+    "subtitle": "Conecte Claude, Cursor ou qualquer cliente MCP para consultar seus dados via Servidor MCP do BOW.",
     "loading": "Carregando...",
     "tabMcpClients": "Clientes MCP",
     "tabOauth": "OAuth",
@@ -5560,7 +5746,10 @@
     "modeChat": "Chat",
     "modelAuto": "Auto",
     "noAgents": "Nenhum",
-    "project": "Projeto"
+    "project": "Projeto",
+    "toolOutputFilesOne": "{count} arquivo criado pelo agente",
+    "toolOutputFilesMany": "{count} arquivos criados pelo agente",
+    "agentsFromReport": "Usa os agentes do relatório"
   },
   "errorPage": {
     "notFoundTitle": "404",
@@ -6381,7 +6570,9 @@
     "noConnection": "Este agente ainda não tem conexão.",
     "notFound": "Esta conexão não foi encontrada.",
     "forbidden": "Você não tem acesso a esta conexão.",
-    "loadFailed": "Não foi possível carregar a conexão. Tente novamente mais tarde."
+    "loadFailed": "Não foi possível carregar a conexão. Tente novamente mais tarde.",
+    "connected": "Conectado",
+    "connectedAs": "Conectado como {identity}"
   },
   "trackedChanges": {
     "noChanges": "Sem alterações"
@@ -6685,6 +6876,29 @@
       "deniedBody": "Você não tem acesso a esta página. Peça ao proprietário para compartilhá-la com você.",
       "goHome": "Ir para o início",
       "backToApp": "Voltar ao app"
+    },
+    "accessRequest": {
+      "noAccessTitle": "Você não tem acesso",
+      "ownerLine": "Este painel pertence a {owner}.",
+      "ownerUnknown": "Você não tem acesso a este painel.",
+      "requestButton": "Solicitar acesso",
+      "notePlaceholder": "Adicionar uma nota (opcional)",
+      "send": "Enviar solicitação",
+      "cancel": "Cancelar",
+      "sent": "Solicitação enviada",
+      "pending": "Sua solicitação está pendente",
+      "askOwner": "Peça acesso ao proprietário do painel, {owner}.",
+      "askOwnerGeneric": "Peça acesso ao proprietário do painel.",
+      "noApprovers": "No momento, ninguém pode aprovar solicitações para este painel.",
+      "cooldown": "Sua solicitação anterior foi recusada. Você pode pedir novamente mais tarde.",
+      "pendingTitle": "Solicitações pendentes",
+      "approve": "Aprovar",
+      "deny": "Recusar",
+      "noteFrom": "Nota de {name}",
+      "switchesPrivate": "Aprovar altera este painel para «Pessoas específicas» e adiciona esta pessoa como visualizador.",
+      "runsAsCreator": "Este painel é executado com o acesso aos dados de {creator}. Aprovar permite que esta pessoa veja o que {creator} vê.",
+      "approveTitle": "Aprovar solicitação de acesso",
+      "confirmApprove": "Aprovar"
     }
   },
   "dashboardSettings": {
@@ -6718,6 +6932,8 @@
     "tabViewers": "Leitores",
     "tabData": "Dados",
     "viewersDesc": "O que recebem as pessoas com quem você compartilha.",
+    "widgetInfoTitle": "Mostrar detalhes nos widgets",
+    "widgetInfoDesc": "Adiciona um ícone ⓘ a cada widget que abre os seus dados, código e cálculo.",
     "dataDesc": "As consultas por trás deste painel.",
     "unsaved": "Alterações não salvas",
     "tabGeneral": "Geral",
@@ -6783,7 +6999,7 @@
       "notPublished": "Isto ainda não foi publicado. Aparecerá aqui quando for publicado.",
       "notFound": "Isto não está disponível. Talvez ainda não tenha sido publicado ou tenha sido removido.",
       "denied": "Você não tem acesso a isto. Peça ao proprietário que compartilhe com você.",
-      "notAllowed": "Isto não está habilitado para este aplicativo. Um editor pode permitir isso nas configurações de incorporação no Bag of Words.",
+      "notAllowed": "Isto não está habilitado para este aplicativo. Um editor pode permitir isso nas configurações de incorporação no BOW.",
       "failed": "Não foi possível carregar. Tente novamente em instantes."
     }
   },
@@ -6814,6 +7030,35 @@
     "enabled": "Ativada",
     "embeddingEmpty": "Embedding is not configured",
     "oauthEmpty": "OAuth is not configured"
+  },
+  "connectors": {
+    "title": "Conectores",
+    "subtitle": "Suas próprias contas e ferramentas que a IA pode usar. Cada conector lê com o seu próprio acesso — ninguém mais vê seus dados.",
+    "browse": "Ver conectores",
+    "empty": "Ainda não há conectores.",
+    "search": "Pesquisar conectores…",
+    "noResults": "Nenhum conector corresponde a “{q}”.",
+    "signIn": "Entrar",
+    "signOut": "Sair",
+    "remove": "Remover",
+    "statusConnected": "Conectado",
+    "statusShared": "Compartilhado",
+    "statusServiceAccount": "Conta de serviço",
+    "statusOffline": "Reconectar",
+    "statusNotConnected": "Não conectado",
+    "needsSignIn": "{n} conector requer que você entre | {n} conectores requerem que você entre",
+    "accessPersonal": "Usa sua própria conta",
+    "accessShared": "Usa uma conta compartilhada configurada por um administrador",
+    "addHint": "Adicione mais conectores em Agentes → Adicionar conexão.",
+    "askAdmin": "Peça a um administrador para adicionar mais conectores.",
+    "removeConfirm": "Remover {name} para todos na organização? Os logins das pessoas também serão removidos.",
+    "signedOut": "Você saiu de {name}",
+    "removed": "{name} removido",
+    "actionFailed": "Algo deu errado",
+    "shareToggleLabel": "Disponibilizar para todos na sua organização",
+    "shareToggleHint": "Adiciona “{name}” aos conectores de todos. Cada pessoa entra com a própria conta — ninguém vê os dados dos outros.",
+    "useAsAgent": "Usar como agente",
+    "movedToAgents": "{name} agora é um agente"
   },
   "tablePreview": {
     "idle": "Pressione Executar para carregar linhas da origem.",
@@ -6875,5 +7120,42 @@
       "search": "pesquisa",
       "read": "leitura"
     }
+  },
+  "agentAccess": {
+    "addMember": "Adicionar membro",
+    "membersHint": "Os membros podem consultar este agente. Atribua permissões adicionais abaixo.",
+    "everyone": "Todos na organização",
+    "query": "Pode consultar",
+    "manage": "Pode gerir",
+    "custom": "Acesso personalizado",
+    "ownerHint": "O proprietário pode sempre gerir este agente.",
+    "editFor": "Editar acesso de {name}",
+    "removeHint": "Remove a associação e as permissões explícitas. O acesso público, de grupo ou da organização pode continuar ativo.",
+    "remove": "Remover",
+    "noMembers": "Ainda não há membros explícitos.",
+    "addTo": "Adicionar pessoas a {name}",
+    "thisAgent": "este agente",
+    "who": "Quem",
+    "access": "Acesso",
+    "advanced": "Permissões avançadas",
+    "cancel": "Cancelar",
+    "saving": "A guardar…",
+    "save": "Guardar",
+    "queryHint": "Fazer perguntas a este agente",
+    "manageHint": "Configurar o agente e gerir os seus membros",
+    "addCount": "Adicionar {count}",
+    "add": "Adicionar",
+    "updated": "Permissões atualizadas",
+    "updateFailed": "Não foi possível atualizar as permissões",
+    "addIncomplete": "Algumas associações ou permissões não foram guardadas. Reveja a lista e tente novamente.",
+    "added": "Membros adicionados",
+    "addFailed": "Não foi possível adicionar membros"
+  },
+  "productUpdates": {
+    "checkbox": "Enviar novidades do produto para mim",
+    "checkboxWithEmail": "Enviar novidades do produto para {email}",
+    "settingsTitle": "Novidades do produto",
+    "toggleLabel": "Receber novidades do produto por e-mail",
+    "sentTo": "Enviado para {email}"
   }
 }

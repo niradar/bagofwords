@@ -24,6 +24,10 @@ class SapHanaClient(DataSourceClient):
     "Expose for Consumption" appear in the space schema.
     """
 
+    # HANA SQL: a quote in a string constant is written '' (SAP HANA SQL
+    # Reference, Constant Expressions).
+    sql_literal_style = "standard"
+
     def __init__(self, host, port: int = 443, user: str = None, password: str = None,
                  database: Optional[str] = None, schema: Optional[str] = None,
                  encrypt: bool = True, verify_ssl: bool = True):
@@ -69,7 +73,7 @@ class SapHanaClient(DataSourceClient):
         except ImportError:
             raise RuntimeError(
                 "SAP HANA driver (hdbcli) is not installed. It is not bundled with "
-                "Bag of Words because of its SAP license; install it on the server "
+                "BOW because of its SAP license; install it on the server "
                 "with `pip install hdbcli` to use this connector."
             )
 

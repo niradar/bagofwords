@@ -669,11 +669,11 @@ class UserManager(BaseUserManager[User, str]):
         base_url = settings.bow_config.base_url
         reset_url = f"{base_url}/users/reset-password?token={token}"
         body = (
-            f"Hello {user.name},<br /><br />You have requested to reset your password for Bag of words. "
+            f"Hello {user.name},<br /><br />You have requested to reset your password for BOW. "
             f"Click the link below to reset your password:<br /><br /> "
             f"<a href='{reset_url}'>{reset_url}</a><br /><br />"
             f"If you didn't request this, please ignore this email.<br /><br />"
-            f"Best regards,<br />Bag of words team"
+            f"Best regards,<br />BOW team"
         )
         await self._send_account_email(user, "Reset your password", body, "reset password")
 
@@ -686,7 +686,7 @@ class UserManager(BaseUserManager[User, str]):
         base_url = settings.bow_config.base_url
         verification_url = f"{base_url}/users/verify?token={token}"
         body = (
-            "Welcome to Bag of words! You are almost ready to start using our platform. "
+            "Welcome to BOW! You are almost ready to start using our platform. "
             f"Click to verify your email: <br /> {verification_url}"
         )
         await self._send_account_email(user, "Verify your email", body, "verification")
@@ -755,7 +755,17 @@ class UserManager(BaseUserManager[User, str]):
         
         # Call parent create method
         user = await super().create(user_create, safe, request)
-        
+
+        # First user's product-updates checkbox (best-effort: never fails sign-up).
+        opted_in = getattr(user_create, "product_updates", None)
+        if opted_in is not None:
+            try:
+                from app.services.product_updates_service import record_signup_choice
+                async with self.user_db.session as session:
+                    await record_signup_choice(session, user, opted_in)
+            except Exception:
+                logger.exception("product_updates: failed to record sign-up choice")
+
         return user
 
     async def _validate_user_creation(self, user_create: UserCreate) -> None:

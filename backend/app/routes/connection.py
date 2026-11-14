@@ -60,7 +60,10 @@ from app.schemas.custom_query_schema import (
     CustomQuerySchema,
     RlsPrincipal,
     CustomQueryTarget,
+    CustomTableRunDetail,
+    CustomTableRunList,
 )
+from app.services import custom_table_runs
 from app.services.custom_query_service import custom_query_service, is_accelerable_type
 from app.services.table_preview_service import table_preview_service, is_previewable_table
 from app.errors import AppError, ErrorCode
@@ -100,6 +103,15 @@ def _iso_utc(dt) -> "str | None":
         return dt.isoformat() + "Z"
     from datetime import timezone
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _strip_unreadable(progress) -> None:
+    if progress.scope == "user" or not progress.stats:
+        return
+    progress.stats = {
+        k: v for k, v in progress.stats.items()
+        if k not in ("unreadable_datasets", "unreadable_dataset_count")
+    }
 
 
 def _indexing_to_progress(row, include_events: bool = True) -> "ConnectionIndexingProgress | None":
@@ -321,6 +333,10 @@ async def list_connections(
         indexing_payload = _indexing_to_progress(
             indexing_by_conn.get(str(conn.id)), include_events=False
         )
+        if indexing_payload is not None and not (
+            is_admin or resolved.has_resource_permission("connection", str(conn.id), "manage_connection")
+        ):
+            _strip_unreadable(indexing_payload)
 
         tool_count = tool_count_by_conn.get(str(conn.id), 0) if conn.type in _TOOL_PROVIDER_TYPES else 0
 
@@ -1362,9 +1378,8 @@ async def get_connection_indexing(
                     int(stats["synced_domains"] or 0),
                     len(await visible_linked_agents(db, organization, current_user, connection)),
                 )
-            stats.pop("unreadable_datasets", None)
-            stats.pop("unreadable_dataset_count", None)
             progress.stats = stats if progress.stats is not None else None
+            _strip_unreadable(progress)
             progress.events = []
     return progress
 
@@ -1669,7 +1684,8 @@ async def preview_custom_query(
     await custom_query_service.ensure_enabled(db, organization)
     connection = await connection_service.get_connection(db, connection_id, organization)
     return await custom_query_service.preview(
-        db, connection, payload.definition_sql, current_user, target=payload.target
+        db, connection, payload.definition_sql, current_user, target=payload.target,
+        refresh_config=payload.refresh_config.model_dump() if payload.refresh_config else None,
     )
 
 
@@ -1711,13 +1727,16 @@ async def create_custom_query(
         organization=organization,
         activate_for_datasource_id=payload.activate_for_datasource_id,
         target=payload.target,
+        refresh_mode=payload.refresh_mode,
+        refresh_config=payload.refresh_config.model_dump(exclude_unset=True) if payload.refresh_config else None,
     )
     try:
         await audit_service.log(
             db, organization_id=str(organization.id), user_id=str(current_user.id),
             action="connection.custom_query.created",
             resource_type="connection", resource_id=str(connection.id),
-            details={"connection": connection.name, "name": cq.name, "rows": cq.no_rows},
+            details={"connection": connection.name, "name": cq.name, "rows": cq.no_rows,
+                     "refresh_mode": cq.refresh_mode},
         )
     except Exception:
         pass
@@ -1750,6 +1769,8 @@ async def update_custom_query(
         refresh_at_time=payload.refresh_at_time,
         current_user=current_user,
         organization_timezone=await custom_query_service._org_timezone(db, organization),
+        refresh_mode=payload.refresh_mode,
+        refresh_config=payload.refresh_config.model_dump(exclude_unset=True) if payload.refresh_config else None,
         **({"target": payload.target} if "target" in payload.model_fields_set else {}),
     )
     try:
@@ -1772,18 +1793,59 @@ async def update_custom_query(
 async def refresh_custom_query(
     connection_id: str,
     cq_id: str,
+    full: bool = False,
     current_user: User = Depends(current_user),
     db: AsyncSession = Depends(get_async_db),
     organization: Organization = Depends(get_current_organization)
 ):
+    """Refresh now. `full=true` rebuilds an incremental table from scratch
+    instead of reading only what is new."""
     await custom_query_service.ensure_enabled(db, organization)
     connection = await connection_service.get_connection(db, connection_id, organization)
     cq = await custom_query_service.get_custom_query(db, str(connection.id), cq_id)
-    cq = await custom_query_service.refresh(db, connection, cq, current_user=current_user)
+    cq = await custom_query_service.refresh(db, connection, cq, current_user=current_user, full=full)
     return CustomQuerySchema.from_model(
         cq, await _active_agent_count(db, cq.id),
         next_run_at=custom_query_service.next_run_at(str(cq.id)),
     )
+
+
+@router.get("/{connection_id}/custom-queries/{cq_id}/runs", response_model=CustomTableRunList)
+@requires_resource_permission('connection', 'manage_connection')
+async def list_custom_query_runs(
+    connection_id: str,
+    cq_id: str,
+    limit: int = 20,
+    before: Optional[str] = None,
+    current_user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_async_db),
+    organization: Organization = Depends(get_current_organization)
+):
+    """The table's refresh history, newest first."""
+    await custom_query_service.ensure_enabled(db, organization)
+    connection = await connection_service.get_connection(db, connection_id, organization)
+    cq = await custom_query_service.get_custom_query(db, str(connection.id), cq_id)
+    return await custom_table_runs.list_runs(db, str(cq.id), limit=max(1, min(limit, 100)), before=before)
+
+
+@router.get("/{connection_id}/custom-queries/{cq_id}/runs/{run_id}", response_model=CustomTableRunDetail)
+@requires_resource_permission('connection', 'manage_connection')
+async def get_custom_query_run(
+    connection_id: str,
+    cq_id: str,
+    run_id: str,
+    current_user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_async_db),
+    organization: Organization = Depends(get_current_organization)
+):
+    """One refresh in full: the query as sent, each window, and its log."""
+    await custom_query_service.ensure_enabled(db, organization)
+    connection = await connection_service.get_connection(db, connection_id, organization)
+    cq = await custom_query_service.get_custom_query(db, str(connection.id), cq_id)
+    run = await custom_table_runs.get_run(db, str(cq.id), run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
 
 
 @router.delete("/{connection_id}/custom-queries/{cq_id}")

@@ -25,7 +25,9 @@ from fastapi import HTTPException
 from sqlalchemy import select, desc, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.data_sources.clients.progress import IndexingCancelled
+from app.data_sources.clients.progress import (
+    IndexingCancelled, NOT_FOUND_REASON, SKIPPED_NAME_REASON, format_name_list, split_unreadable,
+)
 from app.models.connection import Connection
 from app.models.connection_indexing import (
     ConnectionIndexing,
@@ -36,6 +38,40 @@ from app.services.connection_identity import catalog_requires_user_sign_in
 
 
 logger = logging.getLogger(__name__)
+
+
+def _connection_secrets(connection) -> list:
+    """The connection's secret values (passwords, tokens, keys), masked out of
+    any error text written to the run's log. Read once, right after the
+    connection loads: a failed refresh rolls the session back and expires it."""
+    from app.services.connection_service import ConnectionService
+
+    return ConnectionService._error_secrets(connection)
+
+
+_PHASE_LABELS = {
+    "connecting": "connecting to the source",
+    "warming": "warming the cache",
+    "saving": "saving the catalog",
+    "syncing_agents": "syncing agents",
+    "catalog_ready": "reading the catalog",
+}
+
+
+def _failure_message(prefix: str, phase, exc: BaseException, secrets) -> str:
+    """``<prefix> while <phase>: <Type>: <message> (caused by …)`` — redacted.
+
+    The phase says where the run stopped; the exception type makes terse
+    messages (``KeyError: '…'``, an empty ``TimeoutError()``) intelligible.
+    """
+    from app.errors.redact import user_facing_error
+
+    where = ""
+    if phase in _PHASE_LABELS:
+        where = f" while {_PHASE_LABELS[phase]}"
+    elif phase:
+        where = f" during the {str(phase).replace('_', ' ')} phase"
+    return f"{prefix}{where}: {user_facing_error(exc, secrets)}"
 
 
 # Cooperative cancellation. Keyed by indexing_id. The request thread sets the
@@ -642,6 +678,9 @@ class ConnectionIndexingService:
             except Exception:
                 logger.debug("indexing.event_append_failed", exc_info=True)
 
+        # Set once the connection loads; empty until then, so the last-ditch
+        # handler below can always build a message.
+        run_secrets: list = []
         try:
             async with _new_session() as db:
                 row = await db.get(ConnectionIndexing, indexing_id)
@@ -677,6 +716,7 @@ class ConnectionIndexingService:
                     row.finished_at = datetime.utcnow()
                     await db.commit()
                     return
+                run_secrets = _connection_secrets(connection)
 
                 # Progress state shared across the runner loop and worker
                 # thread (where the client's `get_schemas` runs). Reads/writes
@@ -875,6 +915,7 @@ class ConnectionIndexingService:
                                 data_shape=data_shape,
                                 nouns=(noun_sing, noun_plural),
                                 force_refresh=bool((row.stats_json or {}).get("force_schema_refresh")),
+                                secrets=run_secrets,
                             ),
                             _DISCOVERY_TIMEOUT_SECONDS,
                             "Catalog sync",
@@ -891,14 +932,20 @@ class ConnectionIndexingService:
                             extra={"indexing_id": indexing_id, "timeout_s": exc.seconds, "idle": exc.idle},
                         )
                         await _flush(force=True)
+                        failure = _failure_message(
+                            "Catalog sync failed", _state_snapshot()["phase"], exc,
+                            run_secrets,
+                        )
+                        # Log the reason before the row turns terminal: a poller that
+                        # sees "failed" stops polling and would miss a later event.
+                        await _append_event("error", _state_snapshot()["phase"], failure)
                         async with _new_session() as err_db:
                             fresh = await err_db.get(ConnectionIndexing, indexing_id)
                             if fresh is not None and not fresh.is_terminal():
                                 fresh.status = ConnectionIndexingStatus.FAILED.value
-                                fresh.error = str(exc)
+                                fresh.error = failure
                                 fresh.finished_at = datetime.utcnow()
                                 await err_db.commit()
-                        await _append_event("error", _state_snapshot()["phase"], f"Catalog sync failed: {exc}")
                     return
 
                 # Per-user-owned catalogs (OneDrive, personal Drive, mail) have
@@ -1014,12 +1061,19 @@ class ConnectionIndexingService:
                     else:
                         logger.exception("indexing.run.failed", extra={"indexing_id": indexing_id})
                     await _flush(force=True)
+                    failure = _failure_message(
+                        "Indexing failed", _state_snapshot()["phase"], exc,
+                        run_secrets,
+                    )
+                    # Log the reason before the row turns terminal: a poller that
+                    # sees "failed" stops polling and would miss a later event.
+                    await _append_event("error", _state_snapshot()["phase"], failure)
                     # Use a fresh session — the service may have rolled back.
                     async with _new_session() as err_db:
                         fresh = await err_db.get(ConnectionIndexing, indexing_id)
                         if fresh is not None:
                             fresh.status = ConnectionIndexingStatus.FAILED.value
-                            fresh.error = str(exc)[:4000]
+                            fresh.error = failure
                             fresh.finished_at = datetime.utcnow()
                         # Record the failure on the connection for the scheduled
                         # auto-reindex sweeper's diagnostics. next_retry_at was
@@ -1028,9 +1082,8 @@ class ConnectionIndexingService:
                         # (user_required catalogs heal on user login meanwhile).
                         conn_row = await err_db.get(Connection, run_connection_id)
                         if conn_row is not None:
-                            conn_row.last_reindex_error = str(exc)[:4000]
+                            conn_row.last_reindex_error = failure
                         await err_db.commit()
-                    await _append_event("error", _state_snapshot()["phase"], f"Indexing failed: {exc}")
                     return
 
                 # Force one final flush so schema-phase progress ends at its total.
@@ -1086,7 +1139,10 @@ class ConnectionIndexingService:
                         logger.warning("indexing.warm.failed", exc_info=True)
                         await _append_event(
                             "warn", _state_snapshot()["phase"],
-                            f"Cache warm failed (catalog still indexed): {warm_exc}",
+                            _failure_message(
+                                "Cache warm failed (catalog still indexed)", None,
+                                warm_exc, run_secrets,
+                            ),
                         )
 
                 # A cancel that arrived during sync/finalize still wins.
@@ -1141,6 +1197,11 @@ class ConnectionIndexingService:
                 if unreadable:
                     stats_json["unreadable_datasets"] = unreadable
                     stats_json["unreadable_dataset_count"] = len(unreadable)
+                # Full-text index tier: what the index now holds (files by
+                # status, sections) and what this run wrote / reused / pruned.
+                fulltext_stats = getattr(svc, "last_fulltext_stats", None)
+                if fulltext_stats:
+                    stats_json["fulltext"] = fulltext_stats
                 fresh.stats_json = stats_json
                 # Ensure progress_done == progress_total so the UI settles at 100%.
                 if fresh.progress_total and fresh.progress_done < fresh.progress_total:
@@ -1156,17 +1217,39 @@ class ConnectionIndexingService:
                     f"Completed: {item_count} {item_label} in {elapsed_s}s{size_note}",
                     done=item_count, total=item_count,
                 )
-                if unreadable:
-                    _names = ", ".join(
-                        str(d.get("datasetName") or d.get("name") or d.get("datasetId"))
-                        for d in unreadable[:5]
-                    )
-                    _more = "" if len(unreadable) <= 5 else f" (+{len(unreadable) - 5} more)"
+                if fulltext_stats:
+                    _by = fulltext_stats.get("by_status") or {}
+                    _notes = [f"{fulltext_stats.get('files', 0)} files, "
+                              f"{fulltext_stats.get('sections', 0)} sections"]
+                    if fulltext_stats.get("written") or fulltext_stats.get("reused"):
+                        _notes.append(f"{fulltext_stats.get('written', 0)} read, "
+                                      f"{fulltext_stats.get('reused', 0)} unchanged")
+                    if fulltext_stats.get("pruned"):
+                        _notes.append(f"{fulltext_stats['pruned']} removed")
+                    for _k, _label in (("partial", "indexed up to a size limit"),
+                                       ("no_text", "with no extractable text"),
+                                       ("error", "could not be read")):
+                        if _by.get(_k):
+                            _notes.append(f"{_by[_k]} {_label}")
                     await _append_event(
-                        "warn", _state_snapshot()["phase"],
-                        f"{len(unreadable)} semantic model(s) found but not readable "
-                        f"(check permissions): {_names}{_more}",
+                        "info", _state_snapshot()["phase"],
+                        "Full-text index: " + "; ".join(_notes),
                     )
+                if unreadable:
+                    not_found, skipped, not_readable = split_unreadable(unreadable)
+                    for entries, text in (
+                        (not_found, NOT_FOUND_REASON),
+                        (skipped, f"skipped ({SKIPPED_NAME_REASON})"),
+                        (not_readable, "found but not readable (check permissions)"),
+                    ):
+                        if entries:
+                            names = format_name_list([
+                                str(d.get("datasetName") or d.get("name") or d.get("datasetId"))
+                                for d in entries
+                            ])
+                            await _append_event(
+                                "warn", _state_snapshot()["phase"], f"{len(entries)} {text}: {names}",
+                            )
 
         except IndexingCancelled:
             # A cancel that surfaced outside the inner handlers — treat as a
@@ -1177,12 +1260,16 @@ class ConnectionIndexingService:
                 pass
         except Exception as exc:  # pragma: no cover — last-ditch guard
             logger.exception("indexing.run.crash", extra={"indexing_id": indexing_id})
+            failure = _failure_message("Indexing failed", None, exc, run_secrets)
+            # Without this the log just stops: the admin saw progress lines
+            # and then nothing, with no reason anywhere on the screen.
+            await _append_event("error", None, failure)
             try:
                 async with _new_session() as err_db:
                     fresh = await err_db.get(ConnectionIndexing, indexing_id)
                     if fresh is not None and not fresh.is_terminal():
                         fresh.status = ConnectionIndexingStatus.FAILED.value
-                        fresh.error = str(exc)[:4000]
+                        fresh.error = failure
                         fresh.finished_at = datetime.utcnow()
                         await err_db.commit()
             except Exception:
@@ -1235,6 +1322,7 @@ class ConnectionIndexingService:
         data_shape: str,
         nouns: tuple,
         force_refresh: bool = False,
+        secrets: list | None = None,
     ) -> None:
         """Build ONE user's catalog for this connection, in the background.
 
@@ -1294,16 +1382,17 @@ class ConnectionIndexingService:
                 "indexing.user_catalog.failed",
                 extra={"indexing_id": indexing_id, "user_id": user_id},
             )
+            failure = _failure_message("Catalog sync failed", state_snapshot()["phase"], exc, secrets or [])
+            # Log the reason before the row turns terminal: a poller that
+            # sees "failed" stops polling and would miss a later event.
+            await append_event("error", state_snapshot()["phase"], failure)
             async with new_session() as err_db:
                 fresh = await err_db.get(ConnectionIndexing, indexing_id)
                 if fresh is not None:
                     fresh.status = ConnectionIndexingStatus.FAILED.value
-                    fresh.error = str(exc)[:4000]
+                    fresh.error = failure
                     fresh.finished_at = datetime.utcnow()
                     await err_db.commit()
-            await append_event(
-                "error", state_snapshot()["phase"], f"Catalog sync failed: {exc}"
-            )
             return
 
         await flush(force=True)

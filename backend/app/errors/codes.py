@@ -111,7 +111,17 @@ class ErrorCode(str, Enum):
     DASHBOARD_RELEASE_NOT_KEPT = "dashboard.release_not_kept"
     DASHBOARD_TRANSFER_NOT_EDITOR = "dashboard.transfer_not_editor"
     DASHBOARD_PUBLIC_OWNER_ONLY = "dashboard.public_owner_only"
+    # Request-to-view a dashboard (access requests)
+    ACCESS_REQUEST_DISABLED = "access_request.disabled"
+    ACCESS_REQUEST_NOT_ALLOWED = "access_request.not_allowed"
+    ACCESS_REQUEST_ALREADY_HAS_ACCESS = "access_request.already_has_access"
+    ACCESS_REQUEST_PENDING = "access_request.pending"
+    ACCESS_REQUEST_TOO_SOON = "access_request.too_soon"
+    ACCESS_REQUEST_NO_APPROVERS = "access_request.no_approvers"
+    ACCESS_REQUEST_NOT_FOUND = "access_request.not_found"
+    ACCESS_REQUEST_ALREADY_DECIDED = "access_request.already_decided"
     FILE_NOT_FOUND = "file.not_found"
+    FILE_IN_USE = "file.in_use"
     DATA_SOURCE_NOT_FOUND = "data_source.not_found"
     DATA_SOURCE_IN_USE = "data_source.in_use"
     CONNECTION_NOT_FOUND = "connection.not_found"
@@ -120,6 +130,9 @@ class ErrorCode(str, Enum):
     CONNECTION_KMS_USE_CONNECTION_CREDENTIALS = "connection.kms_use_connection_credentials"
     CONNECTION_KMS_ONLY = "connection.kms_only"
     CONNECTION_KMS_DIAGNOSTICS_RUNNING = "connection.kms_diagnostics_running"
+    CONNECTION_KMS_LOGIN_REJECTED = "connection.kms_login_rejected"
+    CONNECTION_KMS_LOGIN_PAUSED = "connection.kms_login_paused"
+    CONNECTION_KMS_SESSION_REFUSED = "connection.kms_session_refused"
     CONNECTION_TABLE_NOT_FOUND = "connection.table_not_found"
     TABLE_PREVIEW_UNSUPPORTED = "connection.table_preview_unsupported"
     TABLE_PREVIEW_FAILED = "connection.table_preview_failed"
@@ -184,3 +197,7 @@ class ErrorCode(str, Enum):
     SHELL_CONFIRMATION_RULE_MISMATCH = "shell_confirmation.rule_mismatch"
 
     SSH_KEY_DISCOVERY_FAILED = "ssh.key_discovery_failed"
+
+    # Connections
+    CONNECTION_CONFIG_INVALID = "connection.config_invalid"
+    CONNECTION_ATHENA_MODE_SWITCH = "connection.athena_mode_switch"

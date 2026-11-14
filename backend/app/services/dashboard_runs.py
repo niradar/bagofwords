@@ -405,8 +405,10 @@ async def viewer_run(db, artifact: Artifact, release: ArtifactRelease, caller) -
     connection_errors: list = []
     for ds in sources:
         try:
+            # Rows filter for the reader, also under the owner's credentials.
             db_clients.update(await ds_service.construct_clients(
-                db, ds, current_user=credential_user, connection_errors=connection_errors))
+                db, ds, current_user=credential_user, connection_errors=connection_errors,
+                row_filter_user=caller))
         except Exception as e:
             # Its charts still get a client that fails with the cause, not a
             # bare missing key (construct_clients attaches the stand-ins).
@@ -474,7 +476,6 @@ async def filter_run(db, artifact: Artifact, release: ArtifactRelease, query: Qu
         verify_identity_binds_in_queries,
     )
     from app.models.organization import Organization
-    from app.models.step_user_result import StepUserResult
     from app.schemas.param_schema import parse_param_specs
     from app.services.access_errors import (CREDENTIALS_REQUIRED_REASON, NO_ACCESS_REASON, is_access_denied,
                                             needs_credentials)
@@ -504,11 +505,9 @@ async def filter_run(db, artifact: Artifact, release: ArtifactRelease, query: Qu
         raise AppError.bad_request(ErrorCode.VALIDATION, str(e))
     fingerprint = params_fingerprint(resolved)
 
-    existing = (await db.execute(
-        select(StepUserResult).where(StepUserResult.step_id == str(step.id),
-                                     StepUserResult.user_id == str(caller.id),
-                                     StepUserResult.params_fingerprint == fingerprint)
-    )).scalars().first()
+    from app.services.viewer_result_store import find_viewer_result
+    existing = await find_viewer_result(
+        db, step_id=step.id, user_id=caller.id, params_fingerprint=fingerprint)
     try:
         _, upstream = await step_identity_scope(db, step)
     except Exception:
@@ -518,6 +517,11 @@ async def filter_run(db, artifact: Artifact, release: ArtifactRelease, query: Qu
         floor = upstream
     fresh = (existing is not None and existing.status == "success" and not request.force_refresh
              and (floor is None or existing.last_run_at is None or existing.last_run_at >= floor))
+    if fresh:
+        # A result run under the owner's credentials over an RLS source is
+        # the owner's slice: run again.
+        from app.services.dashboard_data import release_creator_result_holds_owner_slice
+        fresh = not await release_creator_result_holds_owner_slice(db, existing, release, step.code)
     if fresh and not release.bow_source_access:
         return {"data": existing.data or {}, "applied_params": resolved, "cached": True, "status": "success",
                 "step_id": str(step.id)}
@@ -530,7 +534,7 @@ async def filter_run(db, artifact: Artifact, release: ArtifactRelease, query: Qu
     for ds in sources:
         try:
             clients.update(await ds_service.construct_clients(db, ds, current_user=credential_user,
-                                                              connection_errors=[]))
+                                                              connection_errors=[], row_filter_user=caller))
         except Exception as e:
             source_errors.append(str(getattr(e, "detail", None) or e))
             if needs_credentials(e):

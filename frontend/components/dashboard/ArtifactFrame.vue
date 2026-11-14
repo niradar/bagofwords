@@ -151,7 +151,7 @@
           :rename="canRename ? renameTo : undefined"
           :resources-available="resourcesAvailable && !verificationPreview"
           :show-analytics="(isReportOwner || dashboardCaps.includes('analytics')) && !verificationPreview"
-          @history-changed="onHistoryChanged" />
+          @history-changed="onHistoryChanged" @saved="onSettingsSaved" />
 
         <!-- Everything used less than daily lives behind one ⋯ with labelled
              rows: rename, every export (download), full screen, new tab.
@@ -224,7 +224,7 @@
         </div>
 
         <!-- Share Dashboard -->
-        <ShareModal v-if="report && selectedArtifact?.artifact_id" :report="report" share-type="artifact" :title="tm('share.shareDashboard', selectedArtifact?.mode)"
+        <ShareModal v-if="report && selectedArtifact?.artifact_id" ref="shareModalRef" :report="report" share-type="artifact" :title="tm('share.shareDashboard', selectedArtifact?.mode)"
           :artifact-mode="selectedArtifact.mode"
           :item-name="selectedArtifact.title" :dashboard-id="selectedArtifact.artifact_id" />
 
@@ -522,7 +522,7 @@
         ref="iframeRef"
         data-artifact-frame
         :srcdoc="iframeSrcdoc"
-        sandbox="allow-scripts allow-downloads allow-forms"
+        :sandbox="sandboxAttr"
         class="absolute inset-0 w-full h-full border-0 bg-white dark:bg-gray-900 z-0"
         @load="onIframeLoad"
       />
@@ -634,7 +634,7 @@
               ref="fullscreenRuntimeFrame"
               v-else-if="isFullscreenOpen && iframeSrcdoc"
               :srcdoc="iframeSrcdoc"
-              sandbox="allow-scripts allow-downloads allow-forms"
+              :sandbox="sandboxAttr"
               class="absolute inset-0 w-full h-full border-0"
             />
           </div>
@@ -649,6 +649,7 @@ import type { ExportFormat } from '~/composables/useArtifactExports'
 import type { ActivityEvent } from '~/composables/useArtifactRuntime'
 import { ref, computed, onMounted, onUnmounted, onBeforeUnmount, watch, toRaw, nextTick, provide } from 'vue';
 import { CHAT_VIZ_TEXT_PX } from '~/utils/chatVizText'
+import { artifactSandbox } from '~/utils/artifactSandbox'
 import { useMyFetch as useApplicationFetch } from '~/composables/useMyFetch';
 import DashboardSettingsModal from './DashboardSettingsModal.vue';
 import ArtifactActivityLog from './ArtifactActivityLog.vue';
@@ -1571,6 +1572,10 @@ async function fetchArtifactFiles(): Promise<any[]> {
 const artifactsList = ref<ArtifactItem[]>([]);
 const selectedArtifactId = ref<string | undefined>(undefined);
 const selectedArtifact = ref<any>(null);
+// The iframe sandbox, relaxed to allow popups/new-tab links + modals only when
+// this dashboard opted in (Embed tab). allow_popups rides on the artifact
+// payload (ArtifactSchema, set by the editor routes from the parent).
+const sandboxAttr = computed(() => artifactSandbox(selectedArtifact.value?.allow_popups));
 watch(() => selectedArtifact.value?.artifact_id, async (id) => {
   resourcesAvailable.value = false;
   if (!id || props.verificationPreview) return;
@@ -1909,6 +1914,24 @@ function reviewChanges() {
 
 // The settings window: its History tabs open from the ⋯ menu too.
 const settingsModalRef = ref<any>(null);
+// An access-request notification deep-links to ?share=access_requests: open
+// the share settings once the modal is mounted, then drop the query so a
+// reload does not reopen it.
+const shareModalRef = ref<any>(null);
+const sharePromptHandled = ref(false);
+watch(
+  () => [paramRoute.query.share, !!shareModalRef.value] as const,
+  ([share, ready]) => {
+    if (share === 'access_requests' && ready && !sharePromptHandled.value) {
+      sharePromptHandled.value = true;
+      shareModalRef.value?.open?.();
+      const q = { ...paramRoute.query };
+      delete q.share;
+      navigateTo({ query: q }, { replace: true });
+    }
+  },
+  { immediate: true },
+);
 const activityLogRef = ref<InstanceType<typeof ArtifactActivityLog> | null>(null);
 const inspectOpen = ref(false);
 // Remounting the Publish button re-reads what readers see now.
@@ -1917,6 +1940,15 @@ const publishKey = ref(0);
 function onHistoryChanged() {
   publishKey.value += 1;
   loadDashboardMeta(true);
+}
+
+// Viewer settings saved: re-render the canvas for the display-only ones that
+// show on it. The per-widget ⓘ (show_widget_info) flips window.__BOW_INFO in
+// the iframe, so updating reportData rebuilds the srcdoc live — no reload.
+function onSettingsSaved(settings: any) {
+  if (settings && typeof settings.show_widget_info === 'boolean' && reportData.value) {
+    reportData.value = { ...reportData.value, show_widget_info: settings.show_widget_info };
+  }
 }
 
 // --- Rename the dashboard ------------------------------------------------
@@ -2824,7 +2856,10 @@ async function fetchData(artifactId?: string, { inPlace = false }: { inPlace?: b
       reportData.value = {
         id: reportSnapshot.id,
         title: reportSnapshot.title,
-        theme: reportSnapshot.theme_name || reportSnapshot.report_theme_name
+        theme: reportSnapshot.theme_name || reportSnapshot.report_theme_name,
+        // The per-widget ⓘ provenance popover (per dashboard). The report read
+        // overlays the dashboard's value (conversation_dashboard.report_fields).
+        show_widget_info: !!reportSnapshot.show_widget_info,
       };
       reportDataSources = reportSnapshot.data_sources || [];
     }
@@ -3423,6 +3458,8 @@ function frameIframeOptions(seed: any, artifactCode: string) {
     loadingLabel: t('artifactFrame.loadingArtifact'),
     reactBuild: 'development' as const,
     colorMode: artifactColorMode,
+    // The per-widget ⓘ provenance popover, off by default (per dashboard).
+    showWidgetInfo: !!reportData.value?.show_widget_info,
     // Used only when its key matches artifactCode (artifactIframe.ts), so an
     // artifactCode prop override or a stale selection always compiles in-frame.
     precompiled: { js: selectedArtifact.value?.compiled_js, key: selectedArtifact.value?.compiled_js_key },

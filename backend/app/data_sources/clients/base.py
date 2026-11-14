@@ -62,6 +62,16 @@ class Capability(str, Enum):
     SEARCH_NOTES = "search_notes"
     GREP_NOTES = "grep_notes"
 
+    # Chat capabilities — the Microsoft Teams client declares these INSTEAD OF
+    # the file capabilities, for the same reason mail and notes do. A chat
+    # message is one line of a conversation, so the read verb returns the
+    # whole THREAD around a message (a lone "yes, ship it" means nothing), and
+    # the browse verb is scoped by conversation (a channel or a chat), not by
+    # folder.
+    LIST_CHAT_MESSAGES = "list_chat_messages"
+    READ_CHAT_THREAD = "read_chat_thread"
+    SEARCH_CHAT_MESSAGES = "search_chat_messages"
+
     # Browser capability — declared by the `browser` connection client. Gates
     # the agent-callable browser tools (browser_navigate / browser_snapshot /
     # browser_extract / browser_act / browser_vision) so they only appear in
@@ -120,6 +130,23 @@ class DataSourceClient(DiscoveryClient, ABC):
     # default) renders nothing — better no hint than a wrong one on non-SQL
     # sources (mail, files, metrics APIs).
     relative_date_hint: Optional[str] = None
+
+    # How a query parameter's string value is written as a literal in this
+    # engine's query language (app/ai/code_execution/query_params.py,
+    # LITERAL_STYLE_*): "standard" doubles the quote; engines that read a
+    # backslash as an escape inside strings declare "doubled" or "backslash",
+    # citing their grammar. None refuses parameters: for a language where a
+    # backslash escapes inside strings and no style here is established for
+    # it (KQL, PromQL, SPL), a query with parameters is refused rather than
+    # written with a quoting rule known to be wrong for it.
+    sql_literal_style: Optional[str] = "standard"
+    # True for a connector whose query is a JSON envelope carrying its SQL in
+    # a "sql" field (Elasticsearch, OpenSearch): a value renders there as a
+    # SQL literal, and the envelope is serialized again so it stays inside its
+    # JSON string. Elsewhere in a JSON query document -- any connector's -- a
+    # parameter renders as the engine's literal inside a string value
+    # (JSON-escaped), as a finite number as a bare value, and never in a key.
+    sql_in_json_envelope: bool = False
 
     # When True, listing files live from the source is cheap enough to do on
     # every list_files call (local FS walk, bounded S3 LIST) — so list_files
@@ -195,6 +222,7 @@ class DataSourceClient(DiscoveryClient, ABC):
         prior_catalog: "dict | None" = None,
         prior_tables: "dict | None" = None,
         force_refresh: bool = False,
+        section_sink=None,
     ):
         """Forwards `progress_callback` / `prior_catalog` / `prior_tables` to
         the sync `get_schemas` only if it accepts each kwarg, determined by
@@ -220,6 +248,10 @@ class DataSourceClient(DiscoveryClient, ABC):
             kwargs["prior_catalog"] = prior_catalog
         if prior_tables and _accepts_kwarg(self.get_schemas, "prior_tables"):
             kwargs["prior_tables"] = prior_tables
+        # File sources on the full-text index tier stream each file's sections
+        # to this sink while they walk (see services/file_index_store.py).
+        if section_sink is not None and _accepts_kwarg(self.get_schemas, "section_sink"):
+            kwargs["section_sink"] = section_sink
         # Warehouse query tag (app/data_sources/query_tag.py): catalog reads.
         with query_tag_defaults(source="indexing"):
             result = await asyncio.to_thread(self.get_schemas, **kwargs)
@@ -258,6 +290,8 @@ class DataSourceClient(DiscoveryClient, ABC):
         UI can show how big the indexed data was. Default empty."""
         return {}
 
+    unindexed_table_prefix_separator = "/"
+
     def unindexed_table_prefixes(self) -> List[str]:
         """Table-name prefixes the last `get_schemas` call could not read.
 
@@ -267,7 +301,8 @@ class DataSourceClient(DiscoveryClient, ABC):
         Absent from the result is not the same as gone from the source, so the
         schema refresh keeps existing tables under these prefixes (and the
         agents' selection of them) instead of pruning them. Each prefix covers
-        names that start with ``prefix + "/"``. Default: nothing unread.
+        names that start with ``prefix + unindexed_table_prefix_separator``.
+        Default: nothing unread.
         """
         return []
 

@@ -30,6 +30,12 @@ def _sybase_extraction_source(client):
 
 
 class SybaseClient(DataSourceClient):
+
+    # SQL Anywhere (Watcom SQL): '' is a quote and a backslash starts an
+    # escape sequence (\n, \x41, \\) in string literals (SQL Anywhere SQL
+    # Reference, Strings).
+    sql_literal_style = "doubled"
+
     def __init__(self, host, port, database, user, password):
         self.host = host
         self.port = port
@@ -42,6 +48,9 @@ class SybaseClient(DataSourceClient):
     # SQLAlchemy 2.0 has no SQL Anywhere dialect, so extraction drives the raw
     # pyodbc connection natively. Resolved lazily by fast/sources.source_for.
     EXTRACTION_SOURCE = staticmethod(_sybase_extraction_source)
+    # The dialect a custom table's refresh window is written in
+    # (app/data_sources/fast/incremental.py).
+    INCREMENTAL_DIALECT = "sybase"
 
     def _ensure_freetds_entry(self):
         """Register a freetds.conf entry so FreeTDS can select the correct SQL Anywhere database."""

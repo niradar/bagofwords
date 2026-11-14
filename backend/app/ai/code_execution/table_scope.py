@@ -53,17 +53,51 @@ def _split_name(name: str) -> Name:
     return tuple(p for p in parts if p)
 
 
+def _qualify(name: Name, default_database: str | None) -> Name:
+    """A `schema.table` name read the way the database reads it: in the
+    session's default database. Other lengths are left as they are."""
+    if default_database and len(name) == 2:
+        return (default_database, *name)
+    return name
+
+
 @dataclass(frozen=True)
 class TableScope:
     active: frozenset[Name] = field(default_factory=frozenset)
     inactive: frozenset[Name] = field(default_factory=frozenset)
+    # The connection's default database, for clients that name tables
+    # `schema.table` in it (and `database.schema.table` elsewhere). With it set,
+    # every two-part name, stored or written, is compared as
+    # `default.schema.table`, so a table in another database can no longer
+    # pass for an enabled one that merely shares its schema and table name.
+    default_database: str | None = None
+    # The same selection compared the old way, without database qualification.
+    # Set for connections that predate the database check: a query that only
+    # the old comparison allows is logged and still run, so existing saved
+    # queries keep working while the log shows whether anyone relies on it.
+    legacy: TableScope | None = None
 
     @classmethod
-    def from_names(cls, active: Iterable[str], inactive: Iterable[str]) -> TableScope:
-        act = frozenset(n for n in (_split_name(x) for x in active) if n)
+    def from_names(
+        cls,
+        active: Iterable[str],
+        inactive: Iterable[str],
+        *,
+        default_database: str | None = None,
+        enforce_databases: bool = True,
+    ) -> TableScope:
+        active, inactive = list(active), list(inactive)
+        db = (
+            default_database.strip().strip('"`[]').lower() or None
+            if isinstance(default_database, str) else None
+        )
+        act = frozenset(_qualify(n, db) for n in (_split_name(x) for x in active) if n)
         # A name activated anywhere wins over an inactive duplicate.
-        ina = frozenset(n for n in (_split_name(x) for x in inactive) if n) - act
-        return cls(active=act, inactive=ina)
+        ina = frozenset(_qualify(n, db) for n in (_split_name(x) for x in inactive) if n) - act
+        legacy = None
+        if db and not enforce_databases:
+            legacy = cls.from_names(active, inactive)
+        return cls(active=act, inactive=ina, default_database=db, legacy=legacy)
 
 
 def _suffix_match(ref: Name, known: Name) -> bool:
@@ -159,8 +193,14 @@ def _display(ref: Name) -> str:
     return ".".join(p.upper() for p in ref)
 
 
-def check_table_scope(sql: str, dialect: str, scope: TableScope) -> None:
-    """Raise TableScopeViolation unless every table `sql` reads is active."""
+def check_table_scope(
+    sql: str, dialect: str, scope: TableScope, exact_catalogs: tuple[str, ...] | None = None,
+) -> None:
+    """Raise TableScopeViolation unless every table `sql` reads is active.
+
+    With `exact_catalogs`, a table must be `<db>.<table>`, optionally behind one of
+    those catalogs, and equal an active name part for part (no suffix matching).
+    """
     from app.ai.code_execution.sql_parser import parse_guard_sql
     from sqlglot import exp
     from sqlglot.errors import SqlglotError
@@ -209,7 +249,23 @@ def check_table_scope(sql: str, dialect: str, scope: TableScope) -> None:
                 ref = tuple(p.lower() for p in (t.catalog, t.db, t.name) if p)
                 if len(ref) == 1 and _resolves_to_cte(t):
                     continue
-                if not is_allowed(ref, scope):
+                if exact_catalogs is not None:
+                    allowed = (
+                        (not t.catalog or t.catalog.lower() in exact_catalogs)
+                        and len(ref) == (3 if t.catalog else 2)
+                        and ref[-2:] in scope.active
+                    )
+                else:
+                    allowed = is_allowed(_qualify(ref, scope.default_database), scope)
+                    if not allowed and scope.legacy is not None and is_allowed(ref, scope.legacy):
+                        logger.warning(
+                            "table_scope: allowed %s only because it matches an enabled table "
+                            "outside the connection's default database %s; this will be refused "
+                            "once database checks are enforced",
+                            _display(ref), (scope.default_database or "").upper(),
+                        )
+                        continue
+                if not allowed:
                     shown = _display(ref)
                     if shown not in denied:
                         denied.append(shown)
@@ -236,6 +292,47 @@ def check_table_scope(sql: str, dialect: str, scope: TableScope) -> None:
         )
 
 
+def table_refs(sql: str, dialect: str) -> list[Name]:
+    """Every table `sql` reads, as lowercased name parts, CTE names left out.
+
+    Unreadable SQL and SHOW/DESCRIBE/USE raise, never `[]`.
+    """
+    from app.ai.code_execution.sql_parser import parse_guard_sql
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    try:
+        statements = [s for s in parse_guard_sql(sql, dialect)
+                      if s is not None and not isinstance(s, exp.Semicolon)]
+    except SqlglotError as e:
+        raise TableScopeViolation(
+            "Could not verify which tables this query reads, so it was not run. "
+            "Rewrite it as a plain SELECT over <database>.<table> names."
+        ) from e
+
+    refs: list[Name] = []
+    for stmt in statements:
+        if isinstance(stmt, (exp.Command, exp.Describe, exp.Use)) or type(stmt).__name__ == "Show":
+            raise TableScopeViolation(
+                "SHOW, DESCRIBE and similar statements are not allowed here. "
+                "Read the enabled tables with a SELECT over <database>.<table> names."
+            )
+        for t in stmt.find_all(exp.Table):
+            if not isinstance(t.this, exp.Identifier):
+                continue
+            ref = tuple(str(p).lower() for p in (t.catalog, t.db, t.name) if p)
+            if len(ref) == 1 and _resolves_to_cte(t):
+                continue
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def one_part_table_refs(sql: str, dialect: str) -> list[str]:
+    """Tables read without a database part; unreadable SQL and SHOW/DESCRIBE/USE raise, never `[]`."""
+    return [ref[0] for ref in table_refs(sql, dialect) if len(ref) == 1]
+
+
 def enforce_table_scope(client, query) -> None:
     """Check `query` against the scope attached to `client`, if any."""
     scope: TableScope | None = getattr(client, TABLE_SCOPE_ATTR, None)
@@ -244,4 +341,4 @@ def enforce_table_scope(client, query) -> None:
     dialect = dialect_for_client(client)
     if not dialect:
         return
-    check_table_scope(query, dialect, scope)
+    check_table_scope(query, dialect, scope, getattr(client, "exact_table_scope_catalogs", None))

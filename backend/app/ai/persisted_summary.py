@@ -43,6 +43,7 @@ SUMMARIZED_TOOL_NAMES = frozenset(
         "read_file",
         "read_email",
         "read_note",
+        "read_chat_thread",
     }
 )
 
@@ -528,7 +529,7 @@ def build_tool_context_summary(
                 projection[field] = result_json.get(field)
         return projection
 
-    if name in {"read_file", "read_email", "read_note"}:
+    if name in {"read_file", "read_email", "read_note", "read_chat_thread"}:
         # ReadFileTool already renders at most 4,000 characters. Persist that
         # exact visible excerpt plus the scalar badges/identifiers, never the
         # complete historical file body or binary material.
@@ -593,4 +594,8 @@ def build_tool_context_summary(
 
     if not isinstance(result_json, dict):
         return None
+    if "mcp_app" in result_json:
+        # The MCP App payload (its arguments and the raw result, again) is for
+        # the chat's iframe; the model already has the result in its own shape.
+        result_json = {k: v for k, v in result_json.items() if k != "mcp_app"}
     return _generic_tool_projection(result_json)
