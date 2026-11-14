@@ -74,11 +74,18 @@ NON_DESTINATION_CONFIG_KEYS = frozenset({
     "require_partition_filter", "results_limit", "retries", "schema_sample_size", "shell_policy",
     "shell_rules", "throttlesize", "timeout", "timeout_sec", "timeout_seconds", "timezone",
     "transport", "use_query_cache", "vf_ids", "walk_concurrency", "writable",
+    # Newer connectors, checked in their clients: catalog filters, sample sizes,
+    # scan limits and the SQL dialect. Host, port, URL and TLS settings stay
+    # destinations (Hive's engine only picks the dialect; Db2's platform only
+    # picks the system catalog queries; an Azure container is a path on the
+    # saved account, like a bucket).
+    "container", "containers", "databases", "engine", "keyspaces", "max_scan_rows",
+    "platform", "sample_size", "spaces", "table_exclude_pattern",
 }) | RUNTIME_CONFIG_KEYS
 
 # Credential fields that decide where a secret goes rather than what it is.
 CREDENTIAL_DESTINATION_KEYS = (
-    "authorize_url", "token_url", "otds_url", "gateway_token_url", "root_ca", "account_id",
+    "authorize_url", "token_url", "otds_url", "gateway_token_url", "oauth2_server_uri", "root_ca", "account_id",
     # These choose who the server acts as, or in which tenant, so they compare like a host.
     "role_arn", "kerberos_principal", "principal", "impersonated_user", "trusted_user", "user_directory",
     "user_id", "documentum_login", "tenant_id", "member_cid", "partition", "domain", "workspace_domain",
@@ -88,7 +95,7 @@ CREDENTIAL_DESTINATION_KEYS = (
 # connection without touching a host field.
 _CONNECTION_STRING_FIELDS = (
     "database", "schema", "catalog", "service_name", "warehouse", "olap_database", "dataset",
-    "share", "bucket",
+    "share", "bucket", "container",
 )
 _IDENTITY_FIELDS = ("user", "username")
 _CONNECTION_STRING_DELIMITERS = re.compile(r"[/?#@:;&=\\%]")

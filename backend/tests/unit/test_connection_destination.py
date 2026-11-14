@@ -119,6 +119,7 @@ def test_summary_never_carries_userinfo_or_secrets():
     ("custom_api", {"base_url": "https://api.example.com"}, {"base_url": "https://other.example.com"}),
     ("netsuite", {}, {"account_id": "other"}),
     ("custom_api", {"base_url": "https://api.example.com"}, {"not_a_declared_field": "x"}),
+    ("iceberg", {"uri": "https://catalog.example.com", "auth_type": "oauth2"}, {"oauth2_server_uri": "https://other.example.com/t"}),
 ])
 def test_credential_keys_the_client_uses_as_a_destination_count(conn_type, config, credential):
     assert destination_view(conn_type, config, {}) != destination_view(conn_type, config, credential)
@@ -178,6 +179,14 @@ def test_credential_fields_that_choose_the_identity_or_tenant_count(key):
     ("snowflake", {"account": "a"}, {"query_tag_enabled": False}),
     ("snowflake", {"account": "a"}, {"query_tag_label": "finance team"}),
     ("documentum", {"rest_url": "https://dctm.example.com/rest"}, {"root_path": "/Finance"}),
+    ("aws_athena", {"region": "us-east-1"}, {"table_exclude_pattern": "^tmp_"}),
+    ("hive", {"host": "h"}, {"databases": "sales,ops", "engine": "impala"}),
+    ("dremio", {"url": "https://dremio.example.com"}, {"spaces": "Finance"}),
+    ("cassandra", {"contact_points": "h"}, {"keyspaces": "app", "max_rows": 10}),
+    ("cosmosdb", {"endpoint": "https://c.example.com"}, {"containers": "orders", "sample_size": 50}),
+    ("db2", {"host": "h"}, {"platform": "zos"}),
+    ("iceberg", {"uri": "https://catalog.example.com"}, {"max_scan_rows": 1000}),
+    ("azure_blob", {"account_name": "acct"}, {"container": "reports"}),
 ])
 def test_catalog_filters_and_tags_are_not_a_destination_change(conn_type, saved, changed):
     assert _same(conn_type, saved, {**saved, **changed})
