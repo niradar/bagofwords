@@ -109,8 +109,9 @@ def test_edit_instruction_follows_instruction_authority(world):
     for key, inst_id in world.instructions.items():
         allowed = M.INSTRUCTION_WRITE_ALLOWED[key]
         reader = world.truth_reader(M.INSTRUCTION_TARGETS[key])
+        after = _text_of(world, inst_id, reader)
         for persona in M.ALL:
-            before = _text_of(world, inst_id, reader)
+            before = after   # nothing ran between the last read and this cell
             assert before, f"ground truth unreadable for {key}"
             new_text = f"{persona} edits {key} {uuid.uuid4().hex[:6]}"
             res = world.mcp(persona).call("edit_instruction", {
@@ -165,11 +166,21 @@ def test_delete_instruction_follows_instruction_authority(world):
         allowed = M.INSTRUCTION_WRITE_ALLOWED[key]
         author = M.AGENT_OWNER if key == "inst_owned" else M.ORG_ADMIN
         reader = world.truth_reader(scope)
+        # Creating a rule publishes a build (~0.2s on Postgres). A rule a
+        # refusal left exactly as it was (every field REST returns, version
+        # and updated_at included) serves the next persona; anything else
+        # gets a fresh one.
+        inst_id = None
         for persona in M.ALL:
-            inst_id = world.create_instruction_as(author, f"del {key} by {persona}", scope)
-            assert world.rest_get_instruction(reader, inst_id).status_code == 200
+            if inst_id is None:
+                inst_id = world.create_instruction_as(author, f"del {key} {uuid.uuid4().hex[:6]}", scope)
+                before = world.rest_get_instruction(reader, inst_id)
+            else:
+                before = after   # the kept rule, as read at the end of the last cell
+            assert before.status_code == 200
             res = world.mcp(persona).call("delete_instruction", {"instruction_id": inst_id})
-            gone = world.rest_get_instruction(reader, inst_id).status_code == 404
+            after = world.rest_get_instruction(reader, inst_id)
+            gone = after.status_code == 404
             if persona in allowed:
                 if res.refused:
                     mismatches.append(f"{persona} {key}: refused, must allow ({res.summary()})")
@@ -180,6 +191,8 @@ def test_delete_instruction_follows_instruction_authority(world):
                     mismatches.append(f"{persona} {key}: allowed, must refuse")
                 if gone:
                     mismatches.append(f"{persona} {key}: refused path still deleted it")
+            if not (res.refused and after.status_code == 200 and after.json() == before.json()):
+                inst_id = None
     _report(mismatches, "delete_instruction")
 
 
@@ -271,8 +284,9 @@ def test_describe_tables_follows_view_schema(world):
 def test_edit_schema_follows_manage(world):
     mismatches = []
     for agent, allowed in M.SCHEMA_WRITE_ALLOWED.items():
+        current = world.active_tables(agent)
         for persona in M.ALL:
-            before = world.active_tables(agent)
+            before = current   # as read at the end of the last cell
             target = sorted(before)[0]
             res = world.mcp(persona).call("edit_schema", {
                 "data_source_id": world.agent_id(agent), "deactivate": [target],
@@ -289,10 +303,12 @@ def test_edit_schema_follows_manage(world):
                     back = world.mcp(M.ORG_ADMIN).call("edit_schema", {
                         "data_source_id": world.agent_id(agent), "activate": [target],
                     })
-                    assert back.ok and target in world.active_tables(agent), back.summary()
+                    after = world.active_tables(agent)
+                    assert back.ok and target in after, back.summary()
             else:
                 if res.ok:
                     mismatches.append(f"{label}: allowed, must refuse")
                 if after != before:
                     mismatches.append(f"{label}: refused path still changed active tables")
+            current = after
     _report(mismatches, "edit_schema")
