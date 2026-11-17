@@ -203,33 +203,36 @@ def pytest_configure(config):
         "else — see no_default_skills.",
     )
 
-@pytest.fixture(scope="function", autouse=True)
-def _stop_test_client_loop():
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item, nextitem):
     """End the test's ``test_client`` event loop at the test boundary.
 
-    Requests of one test share a loop (see tests/fixtures/client.py). Defined
-    before the other function autouse fixtures so it is torn down after them:
-    it waits for requests still in flight, releases the loop's pooled
-    connections on the loop, then stops it, so no loop, task, executor thread
-    or connection outlives the test. Cheap when the test made no request.
+    Requests of one test share a loop (see tests/fixtures/client.py). It is
+    stopped (after its in-flight requests, with its pooled connections
+    released on the loop) before the test's fixture finalizers run, so work a
+    request left in executor threads is joined while the test's mocks are
+    still in place, as when every request had its own loop; and again after
+    them, in case a fixture's teardown made requests. No loop, task, executor
+    thread or connection outlives the test. Cheap when no request was made.
     """
-    yield
     from tests.fixtures.client import stop_test_loop
 
+    stop_test_loop()
+    yield
     stop_test_loop()
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Stop the last ``test_client`` loop and write this process's loop
-    counters to test-results/loop-stats-<worker>.json (not in an xdist
-    controller, which runs no tests)."""
-    from tests.fixtures.client import stop_test_loop, write_loop_stats
+    """Stop the last ``test_client`` loop; with ``BOW_TEST_LOOP_STATS=<dir>``,
+    write this process's loop counters there (not from an xdist controller,
+    which runs no tests)."""
+    from tests.fixtures.client import loop_stats_worker_id, stop_test_loop, write_loop_stats
 
     stop_test_loop()
-    config = session.config
-    if getattr(config.option, "dist", "no") != "no" and not hasattr(config, "workerinput"):
-        return
-    write_loop_stats(os.environ.get("PYTEST_XDIST_WORKER", "main"))
+    out_dir = os.environ.get("BOW_TEST_LOOP_STATS")
+    worker_id = loop_stats_worker_id(session.config)
+    if out_dir and worker_id is not None:
+        write_loop_stats(out_dir, worker_id)
 
 
 @pytest.fixture(scope="session", autouse=True)

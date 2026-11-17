@@ -6,8 +6,10 @@ that starts at the test's first request and is stopped at the test boundary
 instead of opened per request. Each request still ends the way it did when it
 had a loop of its own: the tasks it spawned are cancelled when it returns.
 
-``BOW_TEST_PER_REQUEST_LOOP=1`` restores the old behaviour, one loop per
-request (``_ReleasingTestClient``), for A/B runs and debugging.
+``BOW_TEST_PER_REQUEST_LOOP=1`` (or true/yes) restores the old behaviour, one
+loop per request (``_ReleasingTestClient``), for A/B runs and debugging.
+``BOW_TEST_LOOP_STATS=<dir>`` writes each process's loop counters there at
+session end (``loop-stats-<worker>.json``).
 """
 import asyncio
 import contextlib
@@ -55,8 +57,13 @@ _REQUEST_ID = contextvars.ContextVar("bow_test_request_id", default=None)
 # How long a request's cleanup keeps cancelling before it gives up and marks
 # the loop dirty (stopped and replaced once no request is in flight).
 _CANCEL_BOUND_SECONDS = 5.0
-# How long the test boundary waits for requests still running in other threads.
+# How long the test boundary waits for requests still running in other threads
+# before it cancels every task left on the loop, and how long it then waits for
+# those cancellations. Neither bounds the loop's final stop (asyncio.Runner
+# shutdown): a task that swallows cancellation, or executor work, still delays
+# it, exactly as the per-request loop's shutdown always has.
 _BOUNDARY_WAIT_SECONDS = 60.0
+_BOUNDARY_CANCEL_SECONDS = 5.0
 
 
 class _LoopStats:
@@ -96,10 +103,10 @@ class _LoopStats:
 class _TestLoop:
     """One lazily started blocking portal shared by concurrent requests.
 
-    A single condition guards lazy start, the in-flight requests, stop and
-    restart. Nothing holds it while waiting on a loop that a request's cleanup
-    could be running on, so the cleanup (which takes it briefly, on the loop
-    thread) cannot deadlock against a stop.
+    A single condition guards lazy start, the in-flight requests (tracked per
+    portal), stop and restart. Nothing holds it while waiting on a loop that a
+    request's cleanup could be running on, so the cleanup (which takes it
+    briefly, on the loop thread) cannot deadlock against a stop.
     """
 
     def __init__(self, stats):
@@ -121,10 +128,15 @@ class _TestLoop:
         with self._cond:
             return len(self._in_flight)
 
+    def _busy_locked(self, portal):
+        return any(p is portal for p in self._in_flight.values())
+
     # -- lifecycle --------------------------------------------------------------
     def _start_locked(self):
+        # SelectorEventLoop explicitly: neither a uvloop policy a uvicorn test
+        # installed nor any other policy decides the shared loop's type.
         cm = anyio.from_thread.start_blocking_portal(
-            "asyncio", backend_options={"loop_factory": asyncio.new_event_loop}
+            "asyncio", backend_options={"loop_factory": asyncio.SelectorEventLoop}
         )
         portal = cm.__enter__()
         # The portal's own tasks (its main task), never cancelled by a sweep.
@@ -155,20 +167,34 @@ class _TestLoop:
         self.stats.add("portal_stops")
 
     def stop(self):
-        """Test boundary: wait for in-flight requests, then release and stop."""
+        """Test boundary: wait (at most _BOUNDARY_WAIT_SECONDS) for requests in
+        flight on the loop, then release its connections and stop it. On a
+        timeout every task left on the loop is cancelled first (waiting at most
+        _BOUNDARY_CANCEL_SECONDS); the stuck request then fails in its own
+        thread and its cleanup finds the loop gone."""
         with self._cond:
-            if self._portal is None:
+            portal = self._portal
+            if portal is None:
                 return
-            if not self._cond.wait_for(
-                lambda: not self._in_flight, timeout=_BOUNDARY_WAIT_SECONDS
-            ):
-                self.stats.add("boundary_wait_timeouts")
-                print(
-                    f"Warning: {len(self._in_flight)} test_client request(s) still "
-                    "running at the test boundary; stopping their loop anyway",
-                    file=sys.stderr,
-                )
+            timed_out = not self._cond.wait_for(
+                lambda: self._portal is not portal or not self._busy_locked(portal),
+                timeout=_BOUNDARY_WAIT_SECONDS,
+            )
+            if self._portal is not portal:  # stopped meanwhile (dirty restart)
+                return
             detached = self._detach_locked()
+        if timed_out:
+            self.stats.add("boundary_wait_timeouts")
+            print(
+                "Warning: test_client request(s) still running at the test "
+                "boundary; cancelling every task on their loop and stopping it",
+                file=sys.stderr,
+            )
+            try:
+                portal.call(_cancel_all_but_own, portal)
+            except Exception as exc:
+                self.stats.add("cleanup_errors")
+                print(f"Warning: boundary cancel failed: {exc!r}", file=sys.stderr)
         self._stop_detached(*detached)
 
     # -- per request ----------------------------------------------------------------
@@ -177,7 +203,7 @@ class _TestLoop:
         replaced first, but only while no request is in flight on it."""
         while True:
             with self._cond:
-                if not (self._dirty and not self._in_flight):
+                if not (self._dirty and not self._busy_locked(self._portal)):
                     if self._portal is None:
                         self._start_locked()
                     rid = next(self._ids)
@@ -189,15 +215,26 @@ class _TestLoop:
             self._stop_detached(*detached)
 
     def exit(self, rid, portal):
-        """End a request: cancel what it left behind, then deregister it."""
-        bound_hit = True
+        """End a request: cancel what it left behind, then deregister it. If
+        its loop was already detached (a boundary timeout stopped it), there is
+        nothing left to clean."""
+        bound_hit = False
         try:
-            try:
-                bound_hit = portal.call(self._cleanup, rid, portal)
-            except Exception as exc:
-                self.stats.add("cleanup_errors")
-                print(f"Warning: test_client request cleanup failed: {exc!r}", file=sys.stderr)
-                bound_hit = True
+            with self._cond:
+                current = portal is self._portal
+            if current:
+                try:
+                    bound_hit = portal.call(self._cleanup, rid, portal)
+                except Exception as exc:
+                    with self._cond:
+                        current = portal is self._portal
+                    if current:  # not just stopped under us
+                        self.stats.add("cleanup_errors")
+                        print(
+                            f"Warning: test_client request cleanup failed: {exc!r}",
+                            file=sys.stderr,
+                        )
+                        bound_hit = True
         finally:
             detached = None
             with self._cond:
@@ -205,7 +242,7 @@ class _TestLoop:
                 if portal is self._portal:
                     if bound_hit:
                         self._dirty = True
-                    if self._dirty and not self._in_flight:
+                    if self._dirty and not self._busy_locked(portal):
                         detached = self._detach_locked()
                         self.stats.add("dirty_restarts")
                 self._cond.notify_all()
@@ -273,22 +310,42 @@ def _all_tasks_now():
     return set(asyncio.all_tasks())
 
 
+async def _cancel_all_but_own(portal):
+    me = asyncio.current_task()
+    tasks = asyncio.all_tasks() - portal._bow_own_tasks - {me}
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.wait(tasks, timeout=_BOUNDARY_CANCEL_SECONDS)
+
+
 _STATS = _LoopStats()
 _LOOP = _TestLoop(_STATS)
 
 
 def stop_test_loop():
-    """Stop the shared test loop if one is running (test boundary, before an
+    """Stop the shared test loop if one is running (test teardown, before an
     engine dispose, session end). Cheap when none is."""
     if _LOOP.portal is not None:
         _LOOP.stop()
 
 
-def write_loop_stats(worker_id):
-    """Write this process's loop counters to test-results/loop-stats-<worker>.json."""
-    counts = _STATS.snapshot()
+def loop_stats_worker_id(config):
+    """The name this process's stats file goes under, or None for an xdist
+    controller (it runs no tests)."""
+    workerinput = getattr(config, "workerinput", None)
+    if workerinput is not None:
+        return workerinput.get("workerid", "gw")
+    if getattr(config.option, "dist", "no") != "no":
+        return None
+    return "main"
+
+
+def write_loop_stats(out_dir, worker_id, stats=None):
+    """Write the loop counters to <out_dir>/loop-stats-<worker>.json."""
+    counts = (stats or _STATS).snapshot()
     counts["mode"] = "per-request" if per_request_loop_enabled() else "per-test"
-    out_dir = Path(__file__).resolve().parents[2] / "test-results"
+    out_dir = Path(out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"loop-stats-{worker_id}.json").write_text(json.dumps(counts, indent=2))
@@ -299,13 +356,14 @@ def write_loop_stats(worker_id):
 
 
 def per_request_loop_enabled():
-    return os.environ.get("BOW_TEST_PER_REQUEST_LOOP") == "1"
+    value = os.environ.get("BOW_TEST_PER_REQUEST_LOOP", "")
+    return value.strip().lower() in {"1", "true", "yes"}
 
 
 class _PersistentLoopTestClient(TestClient):
     """Requests run on the shared per-test loop (``_LOOP``). Each request owns
     the tasks it spawns (``_REQUEST_ID``), and they are cancelled when it ends.
-    Pooled connections are released at the test boundary, not per request."""
+    Pooled connections are released when the loop stops, not per request."""
 
     def __init__(self, *args, test_loop=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -324,7 +382,13 @@ class _PersistentLoopTestClient(TestClient):
             try:
                 self._test_loop.exit(rid, portal)
             finally:
-                _REQUEST_ID.reset(token)
+                try:
+                    _REQUEST_ID.reset(token)
+                except ValueError:
+                    # The generator was finished in another context than the
+                    # one it started in (e.g. closed by GC): clear the id there
+                    # rather than fail; the original context is not reachable.
+                    _REQUEST_ID.set(None)
 
 
 def make_test_client(asgi_app=app):
