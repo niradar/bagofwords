@@ -203,6 +203,35 @@ def pytest_configure(config):
         "else — see no_default_skills.",
     )
 
+@pytest.fixture(scope="function", autouse=True)
+def _stop_test_client_loop():
+    """End the test's ``test_client`` event loop at the test boundary.
+
+    Requests of one test share a loop (see tests/fixtures/client.py). Defined
+    before the other function autouse fixtures so it is torn down after them:
+    it waits for requests still in flight, releases the loop's pooled
+    connections on the loop, then stops it, so no loop, task, executor thread
+    or connection outlives the test. Cheap when the test made no request.
+    """
+    yield
+    from tests.fixtures.client import stop_test_loop
+
+    stop_test_loop()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Stop the last ``test_client`` loop and write this process's loop
+    counters to test-results/loop-stats-<worker>.json (not in an xdist
+    controller, which runs no tests)."""
+    from tests.fixtures.client import stop_test_loop, write_loop_stats
+
+    stop_test_loop()
+    config = session.config
+    if getattr(config.option, "dist", "no") != "no" and not hasattr(config, "workerinput"):
+        return
+    write_loop_stats(os.environ.get("PYTEST_XDIST_WORKER", "main"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def disable_telemetry_for_tests():
     """Disable telemetry during the entire pytest session via BowConfig only."""
@@ -492,7 +521,12 @@ def _dispose_async_engine():
     can neither lock nor corrupt the next test's database.
     """
     from app.dependencies import engine
+    from tests.fixtures.client import stop_test_loop
     import asyncio
+
+    # A test_client loop must release its pooled connections (on its own
+    # loop) and stop before the engine they belong to is disposed.
+    stop_test_loop()
 
     async def _dispose():
         await engine.dispose()
@@ -510,7 +544,8 @@ def _dispose_async_engine():
 def _stop_abandoned_sqlite_threads():
     """Stop the aiosqlite threads of connections finished requests left open.
 
-    Each TestClient request has its own event loop, and closing it cuts off
+    Each test's TestClient loop (one per request with
+    BOW_TEST_PER_REQUEST_LOOP=1) is closed at its end, which cuts off
     fire-and-forget tasks such as the welcome email before their session can
     close. The connection's thread then waits forever, holding its SQLite
     memory: about one per registered user, and over 1 MB of worker memory
