@@ -195,12 +195,49 @@ def client_logger_disabled_as_by_alembic(monkeypatch):
     """What alembic's ``fileConfig`` (``alembic/env.py``) leaves behind once a
     migration-backed test has run on the worker: every logger that existed
     then is disabled, the test_client fixture module's (``client_mod``)
-    included. The loop's diagnostics must still be logged. asyncio's logger
-    stays enabled, so a "Task exception was never retrieved" report from GC
-    still reaches caplog; only the final-stop test disables it too."""
+    included. The loop's diagnostics must still be logged. alembic disables
+    asyncio's logger too, but this fixture deliberately keeps it enabled, so a
+    "Task exception was never retrieved" report from GC still reaches caplog;
+    only the final-stop test disables it."""
     import logging
 
     monkeypatch.setattr(logging.getLogger(client_mod.__name__), "disabled", True)
+    monkeypatch.setattr(logging.getLogger("asyncio"), "disabled", False)
+
+
+@pytest.fixture
+def logging_configured_by_alembic(monkeypatch):
+    """Run alembic's real ``fileConfig`` (as ``alembic/env.py`` does), then
+    put every logger back as it was. The ``disabled`` flags are saved through
+    the test's one ``monkeypatch``, whose undo runs in reverse order, so other
+    fixtures and the test may patch them too, in any fixture order."""
+    import logging
+    import logging.config
+    from pathlib import Path
+
+    root = logging.getLogger()
+    loggers = [
+        logger
+        for logger in logging.Logger.manager.loggerDict.values()
+        if isinstance(logger, logging.Logger)
+    ] + [root]
+    saved = {
+        logger: (logger.level, logger.propagate, list(logger.handlers)) for logger in loggers
+    }
+    for logger in loggers:
+        monkeypatch.setattr(logger, "disabled", logger.disabled)
+    logging.config.fileConfig(Path(__file__).parents[2] / "alembic.ini")
+    yield
+    for logger in logging.Logger.manager.loggerDict.values():
+        if isinstance(logger, logging.Logger) and logger not in saved:
+            # Created by fileConfig (alembic's own config names them).
+            logger.disabled, logger.propagate = False, True
+            logger.setLevel(logging.NOTSET)
+            logger.handlers[:] = []
+    for logger, (level, propagate, handlers) in saved.items():
+        logger.propagate = propagate
+        logger.setLevel(level)
+        logger.handlers[:] = handlers
 
 
 def _gate(name):
@@ -305,11 +342,14 @@ def test_a_skipped_ownerless_task_is_counted_once_per_request(client, loop):
 
 
 def test_a_task_failing_while_cancelled_is_logged_and_counted_once(
-    client, loop, caplog, client_logger_disabled_as_by_alembic
+    logging_configured_by_alembic, client, loop, caplog, client_logger_disabled_as_by_alembic
 ):
     import gc
     import logging
 
+    # GC's "never retrieved" report goes to asyncio's logger: it must reach
+    # caplog, or the checks below could not catch a second report.
+    assert not logging.getLogger("asyncio").disabled
     caplog.set_level(logging.WARNING)
     assert client.get("/raises-on-cancel/r").status_code == 200
     task = TASKS.pop("r")
@@ -634,6 +674,7 @@ def test_a_task_failing_at_the_loops_final_stop_is_counted(
     # Logged with its traceback, not only named in the task's repr.
     logged = [r for r in caplog.records if r.exc_info and isinstance(r.exc_info[1], ValueError)]
     assert len(logged) == 1
+    assert logged[0].exc_info[2] is not None
     assert "z failed while being cancelled at the final stop" in str(logged[0].exc_info[1])
 
 
