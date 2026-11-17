@@ -440,11 +440,66 @@ def test_teardown_hook_runs_finalizers_even_if_its_first_stop_fails(monkeypatch)
     # Patched only inside, since the real hook runs before monkeypatch's undo.
     with monkeypatch.context() as patch:
         patch.setattr(client_mod, "stop_test_loop", flaky_stop)
-        hook = conftest.pytest_runtest_teardown(None, None)
+        hook = conftest.pytest_runtest_teardown(_fake_item(), None)
         next(hook)  # the finalizers run here
         with pytest.raises(RuntimeError, match="first stop failed"):
             hook.send(None)
     assert calls == [True, False]
+
+
+def _fake_item():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(stash={}, get_closest_marker=lambda name: None)
+
+
+def test_a_boundary_timeout_fails_the_test_it_happened_in(monkeypatch):
+    from tests import conftest
+
+    stats = _LoopStats()
+
+    def stop_that_times_out(if_idle=False):
+        if not if_idle:
+            stats.add("boundary_wait_timeouts")
+
+    item = _fake_item()
+    with monkeypatch.context() as patch:
+        patch.setattr(client_mod, "_STATS", stats)
+        conftest.pytest_runtest_setup(item)
+        patch.setattr(client_mod, "stop_test_loop", stop_that_times_out)
+        hook = conftest.pytest_runtest_teardown(item, None)
+        next(hook)
+        with pytest.raises(pytest.fail.Exception, match="still running"):
+            hook.send(None)
+        # The next test starts from the new count: it does not fail for this one.
+        conftest.pytest_runtest_setup(item)
+        patch.setattr(client_mod, "stop_test_loop", lambda if_idle=False: None)
+        hook = conftest.pytest_runtest_teardown(item, None)
+        next(hook)
+        with pytest.raises(StopIteration):
+            hook.send(None)
+
+
+def test_loop_problems_are_the_non_zero_problem_counters():
+    stats = _LoopStats()
+    assert client_mod.loop_problems(stats) == {}
+    stats.add("owned_cancelled", 3)  # routine, not a problem
+    stats.add("bound_hits", 2)
+    stats.add("boundary_wait_timeouts")
+    assert client_mod.loop_problems(stats) == {"bound_hits": 2, "boundary_wait_timeouts": 1}
+
+
+def test_loop_health_has_one_line_per_worker():
+    lines = client_mod.loop_health_lines({
+        "gw1": {"bound_hits": 2, "dirty_restarts": 2},
+        "gw0": {},
+        "gw2": None,  # the worker sent no report (it crashed)
+    })
+    assert lines == [
+        "test_client loop gw0: no problems",
+        "test_client loop gw1: bound_hits=2 dirty_restarts=2",
+        "test_client loop gw2: no report",
+    ]
 
 
 def test_kill_switch_gives_one_loop_per_request(monkeypatch):

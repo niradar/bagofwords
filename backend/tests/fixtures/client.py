@@ -187,7 +187,8 @@ class _TestLoop:
         release its connections and stop it. On a timeout every task left on
         the loop is cancelled first (waiting at most _BOUNDARY_CANCEL_SECONDS);
         the stuck request then fails in its own thread and its cleanup finds
-        the loop gone."""
+        the loop gone. The timeout is counted (``boundary_wait_timeouts``),
+        and the root conftest fails the test it happened in."""
         with self._cond:
             portal = self._portal
             if portal is None or (if_idle and self._busy_locked(portal)):
@@ -360,6 +361,33 @@ def stop_test_loop(if_idle=False):
     it running while a request is in flight on it."""
     if _LOOP.portal is not None:
         _LOOP.stop(if_idle=if_idle)
+
+
+def boundary_wait_timeouts():
+    """How many boundary stops of this process gave up waiting so far."""
+    return _STATS.snapshot()["boundary_wait_timeouts"]
+
+
+def loop_problems(stats=None):
+    """This process's non-zero problem counters, for the session summary."""
+    counts = (stats or _STATS).snapshot()
+    return {name: counts[name] for name in _LoopStats.PROBLEMS if counts[name]}
+
+
+def loop_health_lines(reports):
+    """One summary line per worker; ``reports`` maps a worker name to its
+    ``loop_problems()``, or to None when the worker sent none."""
+    lines = []
+    for worker in sorted(reports, key=lambda w: (len(w), w)):  # gw2 before gw10
+        problems = reports[worker]
+        if problems is None:
+            status = "no report"
+        elif not problems:
+            status = "no problems"
+        else:
+            status = " ".join(f"{name}={n}" for name, n in problems.items())
+        lines.append(f"test_client loop {worker}: {status}")
+    return lines
 
 
 def per_request_loop_enabled():

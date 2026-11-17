@@ -211,12 +211,18 @@ def pytest_configure(config):
     )
 
 
+# The process's boundary-wait timeout count when a test's setup began.
+_BOUNDARY_TIMEOUTS_AT_SETUP = pytest.StashKey[int]()
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
-    """Before the test's fixtures: choose its ``test_client`` loop mode."""
-    from tests.fixtures.client import use_per_request_loop
+    """Before the test's fixtures: choose its ``test_client`` loop mode, and
+    note the boundary-wait timeouts so far (see pytest_runtest_teardown)."""
+    from tests.fixtures.client import boundary_wait_timeouts, use_per_request_loop
 
     use_per_request_loop(item.get_closest_marker("per_request_loop") is not None)
+    item.stash[_BOUNDARY_TIMEOUTS_AT_SETUP] = boundary_wait_timeouts()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -235,9 +241,15 @@ def pytest_runtest_teardown(item, nextitem):
     connection outlives the test. Cheap when no request was made.
 
     A failure of the first stop is raised only after the finalizers ran, so
-    ``monkeypatch`` and the rest are always undone.
+    ``monkeypatch`` and the rest are always undone. A stop of this test (at
+    its boundary or before an engine dispose) that gave up waiting for a
+    request in flight fails the test, in its teardown.
     """
-    from tests.fixtures.client import stop_test_loop, use_per_request_loop
+    from tests.fixtures.client import (
+        boundary_wait_timeouts,
+        stop_test_loop,
+        use_per_request_loop,
+    )
 
     pre_error = None
     try:
@@ -253,14 +265,51 @@ def pytest_runtest_teardown(item, nextitem):
             use_per_request_loop(False)
     if pre_error is not None:
         raise pre_error
+    timeouts = boundary_wait_timeouts() - item.stash.get(_BOUNDARY_TIMEOUTS_AT_SETUP, 0)
+    if timeouts:
+        pytest.fail(
+            f"{timeouts} stop(s) of this test's test_client loop gave up "
+            "waiting for a request still running in another thread; every "
+            "task on that loop was cancelled (see tests/fixtures/client.py)",
+            pytrace=False,
+        )
     return result
 
 
+# Loop health per worker, reported in the terminal summary: worker name ->
+# its non-zero problem counters, or None when it sent no report.
+_LOOP_HEALTH = {}
+_LOOP_HEALTH_KEY = "bow_test_client_loop_problems"
+
+
 def pytest_sessionfinish(session, exitstatus):
-    """Stop the last ``test_client`` loop."""
-    from tests.fixtures.client import stop_test_loop
+    """Stop the last ``test_client`` loop and report this process's loop
+    problems: an xdist worker sends them to the controller; a run without
+    workers keeps them for its own summary."""
+    from tests.fixtures.client import loop_problems, stop_test_loop
 
     stop_test_loop()
+    workeroutput = getattr(session.config, "workeroutput", None)
+    if workeroutput is not None:
+        workeroutput[_LOOP_HEALTH_KEY] = loop_problems()
+    elif not _LOOP_HEALTH:  # not an xdist controller whose workers reported
+        _LOOP_HEALTH["main"] = loop_problems()
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    """xdist controller: collect a finished worker's loop problems."""
+    _LOOP_HEALTH[node.gateway.id] = getattr(node, "workeroutput", {}).get(_LOOP_HEALTH_KEY)
+
+
+def pytest_terminal_summary(terminalreporter):
+    """One line per worker with its non-zero test_client loop problem
+    counters (bound hits, dirty restarts, cleanup errors, boundary-wait
+    timeouts), printed on every run so CI logs show the loop's health."""
+    from tests.fixtures.client import loop_health_lines
+
+    for line in loop_health_lines(_LOOP_HEALTH):
+        terminalreporter.write_line(line)
 
 
 @pytest.fixture(scope="session", autouse=True)
