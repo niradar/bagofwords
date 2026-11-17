@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import contextvars
 import itertools
+import logging
 import os
 import sys
 import threading
@@ -24,6 +25,8 @@ import anyio
 import pytest
 from fastapi.testclient import TestClient
 from main import app
+
+logger = logging.getLogger(__name__)
 
 
 @contextlib.contextmanager
@@ -85,6 +88,19 @@ class _LoopStats:
         "bound_hits",
         "dirty_restarts",
         "cleanup_errors",
+        "cancel_errors",
+        "cross_thread_requests",
+        "boundary_wait_timeouts",
+    )
+    # The problems that fail the test they happened in (see the root
+    # conftest's pytest_runtest_teardown). Bound hits and dirty restarts only
+    # mean a task swallowed cancellation and its loop was replaced, which the
+    # per-request loop's shutdown would have waited out just as silently:
+    # they are reported in the summary, not failed.
+    FAILING = (
+        "cleanup_errors",
+        "cancel_errors",
+        "cross_thread_requests",
         "boundary_wait_timeouts",
     )
     FIELDS = (
@@ -119,15 +135,26 @@ class _TestLoop:
     portal), stop and restart. Nothing holds it while waiting on a loop that a
     request's cleanup could be running on, so the cleanup (which takes it
     briefly, on the loop thread) cannot deadlock against a stop.
+
+    ``test_thread`` is the thread the current test runs in (set by the root
+    conftest; None turns the check off). A request from any other thread
+    while another request is in flight is counted as ``cross_thread_requests``:
+    the test issues requests from more than one thread and must be marked
+    ``per_request_loop``. A thread's request alone in flight is not counted,
+    so a fixture may still run one request in a thread and end it in its
+    teardown; requests the test's own thread makes (body or fixture teardown)
+    are never counted.
     """
 
     def __init__(self, stats):
         self.stats = stats
+        self.test_thread = None
         self._cond = threading.Condition()
         self._cm = None
         self._portal = None
         self._in_flight = {}  # request id -> portal it runs on
         self._dirty = False
+        self._stopping = set()  # events of detached loops still stopping
         self._ids = itertools.count(1)
 
     # -- introspection (tests) ------------------------------------------------
@@ -160,12 +187,19 @@ class _TestLoop:
         self.stats.add("portal_starts")
 
     def _detach_locked(self):
+        """Take the loop out of service; the caller stops it (outside the
+        lock) with ``_stop_detached``. Until that is done ``stop`` waits on
+        it, whichever thread is stopping it."""
         cm, portal = self._cm, self._portal
         self._cm = self._portal = None
         self._dirty = False
-        return cm, portal
+        stopped = None
+        if cm is not None:
+            stopped = threading.Event()
+            self._stopping.add(stopped)
+        return cm, portal, stopped
 
-    def _stop_detached(self, cm, portal):
+    def _stop_detached(self, cm, portal, stopped):
         """Release the loop's pooled connections on the loop, then stop it the
         normal way (asyncio.Runner cancels and awaits what is left, closes async
         generators and joins the default executor)."""
@@ -174,11 +208,22 @@ class _TestLoop:
         from app.settings.database import release_test_connections
 
         try:
-            portal.call(release_test_connections)
-        except Exception as exc:  # the loop is going away regardless
-            self.stats.add("cleanup_errors")
-            print(f"Warning: release_test_connections failed: {exc!r}", file=sys.stderr)
-        cm.__exit__(None, None, None)
+            try:
+                portal.call(release_test_connections)
+            except Exception as exc:  # the loop is going away regardless
+                self.stats.add("cleanup_errors")
+                print(f"Warning: release_test_connections failed: {exc!r}", file=sys.stderr)
+            cm.__exit__(None, None, None)
+        finally:
+            with self._cond:
+                self._stopping.discard(stopped)
+            stopped.set()
+
+    def _wait_for_detached_stops(self):
+        with self._cond:
+            stopping = list(self._stopping)
+        for stopped in stopping:
+            stopped.wait()
 
     def stop(self, if_idle=False):
         """With ``if_idle``, stop only if no request is in flight on the loop
@@ -188,7 +233,17 @@ class _TestLoop:
         the loop is cancelled first (waiting at most _BOUNDARY_CANCEL_SECONDS);
         the stuck request then fails in its own thread and its cleanup finds
         the loop gone. The timeout is counted (``boundary_wait_timeouts``),
-        and the root conftest fails the test it happened in."""
+        and the root conftest fails the test it happened in.
+
+        Either way it returns only once no loop is left stopping, including
+        one another thread detached (a dirty restart), so an engine dispose
+        that follows never races a loop still releasing its connections."""
+        try:
+            self._stop(if_idle)
+        finally:
+            self._wait_for_detached_stops()
+
+    def _stop(self, if_idle):
         with self._cond:
             portal = self._portal
             if portal is None or (if_idle and self._busy_locked(portal)):
@@ -208,7 +263,7 @@ class _TestLoop:
                 file=sys.stderr,
             )
             try:
-                portal.call(_cancel_all_but_own, portal)
+                portal.call(_cancel_all_but_own, portal, self.stats)
             except Exception as exc:
                 self.stats.add("cleanup_errors")
                 print(f"Warning: boundary cancel failed: {exc!r}", file=sys.stderr)
@@ -221,6 +276,18 @@ class _TestLoop:
         while True:
             with self._cond:
                 if not (self._dirty and not self._busy_locked(self._portal)):
+                    if (
+                        self.test_thread is not None
+                        and self._in_flight
+                        and threading.get_ident() != self.test_thread
+                    ):
+                        self.stats.add("cross_thread_requests")
+                        print(
+                            "Warning: test_client request from another thread "
+                            "while a request is in flight; mark the test "
+                            "@pytest.mark.per_request_loop",
+                            file=sys.stderr,
+                        )
                     if self._portal is None:
                         self._start_locked()
                     rid = next(self._ids)
@@ -314,7 +381,7 @@ class _TestLoop:
                 if remaining <= 0:
                     break
                 _, pending = await asyncio.wait(targets, timeout=remaining)
-                _retrieve_exceptions(targets)
+                _retrieve_exceptions(targets, self.stats)
                 if pending:
                     break
         finally:
@@ -332,23 +399,32 @@ def _all_tasks_now():
     return set(asyncio.all_tasks())
 
 
-def _retrieve_exceptions(tasks):
-    """Mark the exception of each finished task as retrieved: a task that
-    failed while being cancelled is not an error of the test, and would
-    otherwise log "Task exception was never retrieved" when collected."""
+def _retrieve_exceptions(tasks, stats):
+    """Log the exception of each task that failed while being cancelled (or
+    while its cleanup waited), with its traceback, and count it
+    (``cancel_errors``). Retrieving it here keeps GC from logging it again as
+    "Task exception was never retrieved"; the per-request loop's shutdown
+    reported the same exceptions through the loop's exception handler."""
     for task in tasks:
         if task.done() and not task.cancelled():
-            task.exception()
+            exc = task.exception()
+            if exc is not None:
+                stats.add("cancel_errors")
+                logger.warning(
+                    "test_client: task %s raised while being cancelled",
+                    task.get_name(),
+                    exc_info=exc,
+                )
 
 
-async def _cancel_all_but_own(portal):
+async def _cancel_all_but_own(portal, stats):
     me = asyncio.current_task()
     tasks = asyncio.all_tasks() - portal._bow_own_tasks - {me}
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.wait(tasks, timeout=_BOUNDARY_CANCEL_SECONDS)
-        _retrieve_exceptions(tasks)
+        _retrieve_exceptions(tasks, stats)
 
 
 _STATS = _LoopStats()
@@ -357,15 +433,22 @@ _LOOP = _TestLoop(_STATS)
 
 def stop_test_loop(if_idle=False):
     """Stop the shared test loop if one is running (test teardown, before an
-    engine dispose, session end). Cheap when none is. With ``if_idle``, leave
-    it running while a request is in flight on it."""
-    if _LOOP.portal is not None:
-        _LOOP.stop(if_idle=if_idle)
+    engine dispose, session end), and wait for any loop still stopping. Cheap
+    when none is. With ``if_idle``, leave it running while a request is in
+    flight on it."""
+    _LOOP.stop(if_idle=if_idle)
 
 
-def boundary_wait_timeouts():
-    """How many boundary stops of this process gave up waiting so far."""
-    return _STATS.snapshot()["boundary_wait_timeouts"]
+def watch_test_thread(ident):
+    """The thread the current test runs in, or None between tests (see
+    ``_TestLoop``: requests from other threads are counted)."""
+    _LOOP.test_thread = ident
+
+
+def failing_problems():
+    """This process's counts so far of the problems that fail a test."""
+    counts = _STATS.snapshot()
+    return {name: counts[name] for name in _LoopStats.FAILING}
 
 
 def loop_problems(stats=None):
@@ -374,9 +457,10 @@ def loop_problems(stats=None):
     return {name: counts[name] for name in _LoopStats.PROBLEMS if counts[name]}
 
 
-def loop_health_lines(reports):
+def loop_health_lines(reports, mode):
     """One summary line per worker; ``reports`` maps a worker name to its
-    ``loop_problems()``, or to None when the worker sent none."""
+    ``loop_problems()``, or to None when the worker sent none; ``mode`` is
+    ``loop_mode()``."""
     lines = []
     for worker in sorted(reports, key=lambda w: (len(w), w)):  # gw2 before gw10
         problems = reports[worker]
@@ -386,13 +470,31 @@ def loop_health_lines(reports):
             status = "no problems"
         else:
             status = " ".join(f"{name}={n}" for name, n in problems.items())
-        lines.append(f"test_client loop {worker}: {status}")
+        lines.append(f"test_client loop ({mode}) {worker}: {status}")
     return lines
 
 
+_KILL_SWITCH_ON = {"1", "true", "yes"}
+_KILL_SWITCH_OFF = {"", "0", "false", "no"}
+
+
 def per_request_loop_enabled():
-    value = os.environ.get("BOW_TEST_PER_REQUEST_LOOP", "")
-    return value.strip().lower() in {"1", "true", "yes"}
+    """``BOW_TEST_PER_REQUEST_LOOP``; any value but the known ones is an
+    error, so a typo never silently runs the other mode."""
+    raw = os.environ.get("BOW_TEST_PER_REQUEST_LOOP", "")
+    value = raw.strip().lower()
+    if value in _KILL_SWITCH_ON:
+        return True
+    if value in _KILL_SWITCH_OFF:
+        return False
+    raise ValueError(
+        f"BOW_TEST_PER_REQUEST_LOOP={raw!r}: use 1/true/yes for a loop per "
+        "request, or 0/false/no (or unset) for the shared per-test loop"
+    )
+
+
+def loop_mode():
+    return "per-request" if per_request_loop_enabled() else "shared"
 
 
 # Set by the root conftest for the duration of a test marked

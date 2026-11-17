@@ -61,9 +61,13 @@ that.
   mocked provider) must be marked `@pytest.mark.per_request_loop`, which gives
   each of its requests a loop of its own. `BOW_TEST_PER_REQUEST_LOOP=1` does
   that for every test (the kill switch, for A/B runs and debugging; the `-m ai`
-  CI step uses it). The terminal summary prints one `test_client loop` line
-  per worker; any non-zero counter there is a problem to investigate, and a
-  request still running when its loop has to stop fails its test.
+  CI step uses it; any other value than 1/true/yes or 0/false/no stops the
+  run). An unmarked test whose request comes from another thread while one is
+  in flight fails, as does one with a request still running when its loop has
+  to stop, a task that raises while being cancelled, or a failed loop
+  cleanup. The terminal summary prints the loop mode and one
+  `test_client loop` line per worker; any non-zero counter there is a problem
+  to investigate.
 - Pass the `tests/e2e` path, not just `-m e2e`: without it pytest imports the
   whole tree (~11.5k tests) before deselecting, ~110s per xdist process.
 

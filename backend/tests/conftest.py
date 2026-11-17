@@ -209,20 +209,34 @@ def pytest_configure(config):
         "for a test that issues test_client requests from more than one "
         "thread (see tests/fixtures/client.py).",
     )
+    from tests.fixtures.client import per_request_loop_enabled
+
+    try:
+        per_request_loop_enabled()  # a mistyped kill switch stops the run here
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from None
 
 
-# The process's boundary-wait timeout count when a test's setup began.
-_BOUNDARY_TIMEOUTS_AT_SETUP = pytest.StashKey[int]()
+# The process's counts of test-failing loop problems when a test's setup began.
+_LOOP_PROBLEMS_AT_SETUP = pytest.StashKey[dict]()
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
-    """Before the test's fixtures: choose its ``test_client`` loop mode, and
-    note the boundary-wait timeouts so far (see pytest_runtest_teardown)."""
-    from tests.fixtures.client import boundary_wait_timeouts, use_per_request_loop
+    """Before the test's fixtures: choose its ``test_client`` loop mode, watch
+    its thread for requests from other threads, and note the test-failing loop
+    problems so far (see pytest_runtest_teardown)."""
+    import threading
+
+    from tests.fixtures.client import (
+        failing_problems,
+        use_per_request_loop,
+        watch_test_thread,
+    )
 
     use_per_request_loop(item.get_closest_marker("per_request_loop") is not None)
-    item.stash[_BOUNDARY_TIMEOUTS_AT_SETUP] = boundary_wait_timeouts()
+    watch_test_thread(threading.get_ident())
+    item.stash[_LOOP_PROBLEMS_AT_SETUP] = failing_problems()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -241,14 +255,24 @@ def pytest_runtest_teardown(item, nextitem):
     connection outlives the test. Cheap when no request was made.
 
     A failure of the first stop is raised only after the finalizers ran, so
-    ``monkeypatch`` and the rest are always undone. A stop of this test (at
-    its boundary or before an engine dispose) that gave up waiting for a
-    request in flight fails the test, in its teardown.
+    ``monkeypatch`` and the rest are always undone; if a finalizer fails too,
+    its error is raised with the first stop's failure attached as a note.
+
+    The test fails, in its teardown, if any of these happened during it (in
+    its body, its fixtures or a stop): a stop gave up waiting for a request
+    in flight (``boundary_wait_timeouts``), the loop's own cleanup failed
+    (``cleanup_errors``), a task raised while being cancelled
+    (``cancel_errors``, logged with its traceback), or a request came from
+    another thread while one was in flight in a test not marked
+    ``per_request_loop`` (``cross_thread_requests``).
     """
+    import traceback
+
     from tests.fixtures.client import (
-        boundary_wait_timeouts,
+        failing_problems,
         stop_test_loop,
         use_per_request_loop,
+        watch_test_thread,
     )
 
     pre_error = None
@@ -258,19 +282,36 @@ def pytest_runtest_teardown(item, nextitem):
         pre_error = exc
     try:
         result = yield
+    except BaseException as exc:
+        if pre_error is not None:
+            exc.add_note(
+                "The test_client loop's first stop (before the finalizers) "
+                "also failed:\n" + "".join(traceback.format_exception(pre_error))
+            )
+        raise
     finally:
         try:
             stop_test_loop()
         finally:
             use_per_request_loop(False)
+            watch_test_thread(None)
     if pre_error is not None:
         raise pre_error
-    timeouts = boundary_wait_timeouts() - item.stash.get(_BOUNDARY_TIMEOUTS_AT_SETUP, 0)
-    if timeouts:
+    before = item.stash.get(_LOOP_PROBLEMS_AT_SETUP, {})
+    happened = {
+        name: n - before.get(name, 0)
+        for name, n in failing_problems().items()
+        if n - before.get(name, 0)
+    }
+    if happened:
         pytest.fail(
-            f"{timeouts} stop(s) of this test's test_client loop gave up "
-            "waiting for a request still running in another thread; every "
-            "task on that loop was cancelled (see tests/fixtures/client.py)",
+            "test_client loop problems in this test: "
+            + " ".join(f"{name}={n}" for name, n in happened.items())
+            + " (the warnings on stderr and in the log say what happened; "
+            "boundary_wait_timeouts: a request was still running in another "
+            "thread when its loop had to stop; cross_thread_requests: mark "
+            "the test @pytest.mark.per_request_loop; see "
+            "tests/fixtures/client.py)",
             pytrace=False,
         )
     return result
@@ -285,15 +326,24 @@ _LOOP_HEALTH_KEY = "bow_test_client_loop_problems"
 def pytest_sessionfinish(session, exitstatus):
     """Stop the last ``test_client`` loop and report this process's loop
     problems: an xdist worker sends them to the controller; a run without
-    workers keeps them for its own summary."""
+    workers keeps them for its own summary. The xdist controller runs no
+    tests and reports nothing of its own."""
     from tests.fixtures.client import loop_problems, stop_test_loop
 
     stop_test_loop()
     workeroutput = getattr(session.config, "workeroutput", None)
     if workeroutput is not None:
         workeroutput[_LOOP_HEALTH_KEY] = loop_problems()
-    elif not _LOOP_HEALTH:  # not an xdist controller whose workers reported
+    elif not session.config.pluginmanager.has_plugin("dsession"):
         _LOOP_HEALTH["main"] = loop_problems()
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_setupnodes(config, specs):
+    """xdist controller: every worker it starts is expected to report; one
+    that never does is shown as "no report"."""
+    for spec in specs:
+        _LOOP_HEALTH.setdefault(spec.id, None)
 
 
 @pytest.hookimpl(optionalhook=True)
@@ -303,12 +353,12 @@ def pytest_testnodedown(node, error):
 
 
 def pytest_terminal_summary(terminalreporter):
-    """One line per worker with its non-zero test_client loop problem
-    counters (bound hits, dirty restarts, cleanup errors, boundary-wait
-    timeouts), printed on every run so CI logs show the loop's health."""
-    from tests.fixtures.client import loop_health_lines
+    """One line per worker with the loop mode and its non-zero test_client
+    loop problem counters, printed on every run so CI logs show the loop's
+    health."""
+    from tests.fixtures.client import loop_health_lines, loop_mode
 
-    for line in loop_health_lines(_LOOP_HEALTH):
+    for line in loop_health_lines(_LOOP_HEALTH, loop_mode()):
         terminalreporter.write_line(line)
 
 
@@ -604,21 +654,23 @@ def _dispose_async_engine():
     from tests.fixtures.client import stop_test_loop
     import asyncio
 
-    # A test_client loop must release its pooled connections (on its own
-    # loop) and stop before the engine they belong to is disposed.
-    stop_test_loop()
-
     async def _dispose():
         await engine.dispose()
 
+    # A test_client loop must release its pooled connections (on its own
+    # loop) and stop before the engine they belong to is disposed; the
+    # dispose runs even if that stop fails.
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_dispose())
-        loop.close()
-    except Exception as e:
-        print(f"Warning: Failed to dispose engine: {e}")
-    _stop_abandoned_sqlite_threads()
+        stop_test_loop()
+    finally:
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_dispose())
+            loop.close()
+        except Exception as e:
+            print(f"Warning: Failed to dispose engine: {e}")
+        _stop_abandoned_sqlite_threads()
 
 
 def _stop_abandoned_sqlite_threads():
