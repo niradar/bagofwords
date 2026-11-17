@@ -191,20 +191,16 @@ def client(loop):
 
 
 @pytest.fixture
-def loggers_disabled_as_by_alembic():
+def client_logger_disabled_as_by_alembic(monkeypatch):
     """What alembic's ``fileConfig`` (``alembic/env.py``) leaves behind once a
     migration-backed test has run on the worker: every logger that existed
-    then is disabled, this module's and asyncio's included. The loop's
-    diagnostics must still be logged."""
+    then is disabled, the test_client fixture module's (``client_mod``)
+    included. The loop's diagnostics must still be logged. asyncio's logger
+    stays enabled, so a "Task exception was never retrieved" report from GC
+    still reaches caplog; only the final-stop test disables it too."""
     import logging
 
-    loggers = [logging.getLogger(client_mod.__name__), logging.getLogger("asyncio")]
-    saved = [logger.disabled for logger in loggers]
-    for logger in loggers:
-        logger.disabled = True
-    yield
-    for logger, disabled in zip(loggers, saved):
-        logger.disabled = disabled
+    monkeypatch.setattr(logging.getLogger(client_mod.__name__), "disabled", True)
 
 
 def _gate(name):
@@ -309,7 +305,7 @@ def test_a_skipped_ownerless_task_is_counted_once_per_request(client, loop):
 
 
 def test_a_task_failing_while_cancelled_is_logged_and_counted_once(
-    client, loop, caplog, loggers_disabled_as_by_alembic
+    client, loop, caplog, client_logger_disabled_as_by_alembic
 ):
     import gc
     import logging
@@ -617,13 +613,16 @@ def test_stop_also_ends_a_loop_started_while_it_waited(monkeypatch):
 
 
 def test_a_task_failing_at_the_loops_final_stop_is_counted(
-    client, loop, caplog, loggers_disabled_as_by_alembic
+    client, loop, monkeypatch, caplog, client_logger_disabled_as_by_alembic
 ):
     """A task the request cleanup never saw (scheduled from executor work
     after its request ended) and that raises when the loop's final stop
     cancels it is counted, before ``stop`` returns."""
     import logging
 
+    # alembic disables asyncio's logger as well, so the default handler's
+    # report would be lost: the loop logs it on its own logger.
+    monkeypatch.setattr(logging.getLogger("asyncio"), "disabled", True)
     caplog.set_level(logging.ERROR)
     assert client.get("/late/z").status_code == 200
     go, running = LATE["z"]
@@ -632,11 +631,14 @@ def test_a_task_failing_at_the_loops_final_stop_is_counted(
     loop.stop()
     assert TASKS["z"].done() and not TASKS["z"].cancelled()
     assert loop.stats.snapshot()["cancel_errors"] == 1
-    assert "z failed while being cancelled at the final stop" in caplog.text
+    # Logged with its traceback, not only named in the task's repr.
+    logged = [r for r in caplog.records if r.exc_info and isinstance(r.exc_info[1], ValueError)]
+    assert len(logged) == 1
+    assert "z failed while being cancelled at the final stop" in str(logged[0].exc_info[1])
 
 
 def test_a_cleanup_cut_off_by_a_boundary_stop_is_logged(
-    client, loop, monkeypatch, caplog, loggers_disabled_as_by_alembic
+    client, loop, monkeypatch, caplog, client_logger_disabled_as_by_alembic
 ):
     """A request whose cleanup is still sweeping when the boundary gives up
     and stops its loop: the cleanup's failure is no test problem (the
