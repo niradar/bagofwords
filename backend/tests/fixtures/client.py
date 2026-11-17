@@ -29,6 +29,15 @@ from main import app
 logger = logging.getLogger(__name__)
 
 
+def _logger():
+    """This module's logger, re-enabled. alembic's ``fileConfig``
+    (``alembic/env.py``, run by every migration-backed test) disables each
+    logger that exists then, which would hide the loop's diagnostics for the
+    rest of the worker's tests."""
+    logger.disabled = False
+    return logger
+
+
 @contextlib.contextmanager
 def _releasing_portal(client, open_portal):
     """One request on a loop of its own (``open_portal`` is Starlette's
@@ -369,7 +378,7 @@ class _TestLoop:
                         )
                         bound_hit = True
                     else:  # the boundary stopped its loop (already counted)
-                        logger.warning(
+                        _logger().warning(
                             "test_client request %s cleanup failed after its loop "
                             "was stopped under it: %r",
                             rid,
@@ -465,13 +474,23 @@ def _count_shutdown_errors(stats):
     """Runs on the shared loop once, at its start. A task that raises when the
     loop's final stop cancels it never reaches ``_retrieve_exceptions``;
     asyncio.Runner reports it to the loop's exception handler instead. Count
-    those (``cancel_errors``) too, and leave the logging (with the traceback)
-    to the default handler. They are counted on the loop thread before its
-    stop returns, so before the test's teardown compares the counts."""
+    those (``cancel_errors``) too, and log them with their traceback on this
+    module's logger (asyncio's own is disabled once alembic has configured
+    logging). They are counted on the loop thread before its stop returns, so
+    before the test's teardown compares the counts. Anything else goes to the
+    default handler."""
 
     def handler(loop, context):
-        if context.get("message") == _SHUTDOWN_REPORT and context.get("exception") is not None:
+        exc = context.get("exception")
+        if context.get("message") == _SHUTDOWN_REPORT and exc is not None:
             stats.add("cancel_errors")
+            _logger().error(
+                "test_client: %s, task %r",
+                _SHUTDOWN_REPORT,
+                context.get("task"),
+                exc_info=exc,
+            )
+            return
         loop.default_exception_handler(context)
 
     asyncio.get_running_loop().set_exception_handler(handler)
@@ -488,7 +507,7 @@ def _retrieve_exceptions(tasks, stats):
             exc = task.exception()
             if exc is not None:
                 stats.add("cancel_errors")
-                logger.warning(
+                _logger().warning(
                     "test_client: task %s raised while being cancelled",
                     task.get_name(),
                     exc_info=exc,

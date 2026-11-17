@@ -190,6 +190,23 @@ def client(loop):
     return _PersistentLoopTestClient(app, test_loop=loop)
 
 
+@pytest.fixture
+def loggers_disabled_as_by_alembic():
+    """What alembic's ``fileConfig`` (``alembic/env.py``) leaves behind once a
+    migration-backed test has run on the worker: every logger that existed
+    then is disabled, this module's and asyncio's included. The loop's
+    diagnostics must still be logged."""
+    import logging
+
+    loggers = [logging.getLogger(client_mod.__name__), logging.getLogger("asyncio")]
+    saved = [logger.disabled for logger in loggers]
+    for logger in loggers:
+        logger.disabled = True
+    yield
+    for logger, disabled in zip(loggers, saved):
+        logger.disabled = disabled
+
+
 def _gate(name):
     GATES[name] = (threading.Event(), threading.Event())
     return GATES[name]
@@ -291,7 +308,9 @@ def test_a_skipped_ownerless_task_is_counted_once_per_request(client, loop):
     assert "error" not in result
 
 
-def test_a_task_failing_while_cancelled_is_logged_and_counted_once(client, loop, caplog):
+def test_a_task_failing_while_cancelled_is_logged_and_counted_once(
+    client, loop, caplog, loggers_disabled_as_by_alembic
+):
     import gc
     import logging
 
@@ -597,13 +616,15 @@ def test_stop_also_ends_a_loop_started_while_it_waited(monkeypatch):
     assert "error" not in result
 
 
-def test_a_task_failing_at_the_loops_final_stop_is_counted(client, loop, caplog):
+def test_a_task_failing_at_the_loops_final_stop_is_counted(
+    client, loop, caplog, loggers_disabled_as_by_alembic
+):
     """A task the request cleanup never saw (scheduled from executor work
     after its request ended) and that raises when the loop's final stop
     cancels it is counted, before ``stop`` returns."""
     import logging
 
-    caplog.set_level(logging.ERROR, logger="asyncio")
+    caplog.set_level(logging.ERROR)
     assert client.get("/late/z").status_code == 200
     go, running = LATE["z"]
     go.set()
@@ -614,7 +635,9 @@ def test_a_task_failing_at_the_loops_final_stop_is_counted(client, loop, caplog)
     assert "z failed while being cancelled at the final stop" in caplog.text
 
 
-def test_a_cleanup_cut_off_by_a_boundary_stop_is_logged(client, loop, monkeypatch, caplog):
+def test_a_cleanup_cut_off_by_a_boundary_stop_is_logged(
+    client, loop, monkeypatch, caplog, loggers_disabled_as_by_alembic
+):
     """A request whose cleanup is still sweeping when the boundary gives up
     and stops its loop: the cleanup's failure is no test problem (the
     boundary timeout already is), but it is logged, not swallowed."""
