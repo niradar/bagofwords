@@ -62,9 +62,10 @@ that.
   each of its requests a loop of its own. `BOW_TEST_PER_REQUEST_LOOP=1` does
   that for every test (the kill switch, for A/B runs and debugging; the `-m ai`
   CI step uses it; any other value than 1/true/yes or 0/false/no stops the
-  run). An unmarked test whose request comes from another thread while one is
-  in flight fails, as does one with a request still running when its loop has
-  to stop, a task that raises while being cancelled, or a failed loop
+  run). An unmarked test with requests from two threads in flight at once
+  fails (whichever thread came first), as does one with a request still
+  running when its loop has to stop, a task that raises while being cancelled
+  (at a request's end or at the loop's final stop), or a failed loop
   cleanup. The terminal summary prints the loop mode and one
   `test_client loop` line per worker; any non-zero counter there is a problem
   to investigate.

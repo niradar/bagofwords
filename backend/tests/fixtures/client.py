@@ -136,14 +136,14 @@ class _TestLoop:
     request's cleanup could be running on, so the cleanup (which takes it
     briefly, on the loop thread) cannot deadlock against a stop.
 
-    ``test_thread`` is the thread the current test runs in (set by the root
-    conftest; None turns the check off). A request from any other thread
-    while another request is in flight is counted as ``cross_thread_requests``:
-    the test issues requests from more than one thread and must be marked
-    ``per_request_loop``. A thread's request alone in flight is not counted,
-    so a fixture may still run one request in a thread and end it in its
-    teardown; requests the test's own thread makes (body or fixture teardown)
-    are never counted.
+    ``test_thread`` is the current test's thread (set by the root conftest;
+    None turns the check off). A request that starts while a request from
+    another thread is in flight on the same loop is counted as
+    ``cross_thread_requests``, whichever thread came first (the test's or
+    another): the test issues requests from more than one thread and must be
+    marked ``per_request_loop``. A thread's request alone in flight is not
+    counted, so a fixture may still run one request in a thread and end it in
+    its teardown.
     """
 
     def __init__(self, stats):
@@ -152,7 +152,7 @@ class _TestLoop:
         self._cond = threading.Condition()
         self._cm = None
         self._portal = None
-        self._in_flight = {}  # request id -> portal it runs on
+        self._in_flight = {}  # request id -> (portal it runs on, its thread)
         self._dirty = False
         self._stopping = set()  # events of detached loops still stopping
         self._ids = itertools.count(1)
@@ -168,7 +168,7 @@ class _TestLoop:
             return len(self._in_flight)
 
     def _busy_locked(self, portal):
-        return any(p is portal for p in self._in_flight.values())
+        return any(p is portal for p, _ in self._in_flight.values())
 
     # -- lifecycle --------------------------------------------------------------
     def _start_locked(self):
@@ -183,13 +183,15 @@ class _TestLoop:
         # snapshot; relies on anyio 4.14.2's BlockingPortal having no
         # __slots__ (an AttributeError here means that changed).
         portal._bow_own_tasks = frozenset(portal.call(_all_tasks_now))
+        portal.call(_count_shutdown_errors, self.stats)
         self._cm, self._portal, self._dirty = cm, portal, False
         self.stats.add("portal_starts")
 
     def _detach_locked(self):
         """Take the loop out of service; the caller stops it (outside the
         lock) with ``_stop_detached``. Until that is done ``stop`` waits on
-        it, whichever thread is stopping it."""
+        it, whichever thread is stopping it. Call it through ``_detaching``,
+        which makes sure that stop happens."""
         cm, portal = self._cm, self._portal
         self._cm = self._portal = None
         self._dirty = False
@@ -199,10 +201,35 @@ class _TestLoop:
             self._stopping.add(stopped)
         return cm, portal, stopped
 
-    def _stop_detached(self, cm, portal, stopped):
+    @contextlib.contextmanager
+    def _detaching(self):
+        """Yield ``detach``, to call under the lock in place of
+        ``_detach_locked``. Every loop it detached is stopped when the block
+        is left, however it is left: otherwise an interrupt in between (a
+        KeyboardInterrupt, pytest-timeout's signal-method failure) would leave
+        its stop pending and every later ``stop`` waiting on it forever. When
+        the block is left by an exception, what is still running on the loop
+        (a request stuck in flight) is cancelled rather than waited for."""
+        detached = []
+
+        def detach():
+            detached.append(self._detach_locked())
+
+        try:
+            yield detach
+        except BaseException as exc:
+            for loop in detached:
+                self._stop_detached(*loop, interrupted=exc)
+            raise
+        for loop in detached:
+            self._stop_detached(*loop)
+
+    def _stop_detached(self, cm, portal, stopped, interrupted=None):
         """Release the loop's pooled connections on the loop, then stop it the
         normal way (asyncio.Runner cancels and awaits what is left, closes async
-        generators and joins the default executor)."""
+        generators and joins the default executor). With ``interrupted`` (the
+        exception that is unwinding the stop), the portal cancels the calls
+        still running on it instead of waiting for them."""
         if cm is None:
             return
         from app.settings.database import release_test_connections
@@ -213,17 +240,30 @@ class _TestLoop:
             except Exception as exc:  # the loop is going away regardless
                 self.stats.add("cleanup_errors")
                 print(f"Warning: release_test_connections failed: {exc!r}", file=sys.stderr)
-            cm.__exit__(None, None, None)
+            if interrupted is None:
+                cm.__exit__(None, None, None)
+            else:
+                cm.__exit__(type(interrupted), interrupted, interrupted.__traceback__)
         finally:
             with self._cond:
                 self._stopping.discard(stopped)
             stopped.set()
 
-    def _wait_for_detached_stops(self):
+    def _wait_for_detached_stops(self, timeout=None):
+        """Wait for the loops still stopping (at most ``timeout`` seconds in
+        all, if given; then warn and return)."""
         with self._cond:
             stopping = list(self._stopping)
+        deadline = None if timeout is None else time.monotonic() + timeout
         for stopped in stopping:
-            stopped.wait()
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if not stopped.wait(remaining):
+                print(
+                    "Warning: a test_client loop another thread is stopping is "
+                    f"still stopping after {timeout}s; not waiting for it here",
+                    file=sys.stderr,
+                )
+                return
 
     def stop(self, if_idle=False):
         """With ``if_idle``, stop only if no request is in flight on the loop
@@ -233,69 +273,79 @@ class _TestLoop:
         the loop is cancelled first (waiting at most _BOUNDARY_CANCEL_SECONDS);
         the stuck request then fails in its own thread and its cleanup finds
         the loop gone. The timeout is counted (``boundary_wait_timeouts``),
-        and the root conftest fails the test it happened in.
+        and the root conftest fails the test it happened in. If the loop is
+        replaced while it waits (a dirty restart in another thread, and a new
+        request started the next loop), the new one is stopped the same way,
+        within the same bound.
 
-        Either way it returns only once no loop is left stopping, including
-        one another thread detached (a dirty restart), so an engine dispose
-        that follows never races a loop still releasing its connections."""
+        It then waits for any loop still stopping, including one another
+        thread detached (a dirty restart), so an engine dispose that follows
+        never races a loop still releasing its connections. With ``if_idle``
+        (the stop before a test's finalizers, one of which may be what lets
+        such a stop finish) it waits for those at most
+        _BOUNDARY_WAIT_SECONDS; the full stop after the finalizers waits for
+        them in any case."""
         try:
             self._stop(if_idle)
         finally:
-            self._wait_for_detached_stops()
+            self._wait_for_detached_stops(_BOUNDARY_WAIT_SECONDS if if_idle else None)
 
     def _stop(self, if_idle):
-        with self._cond:
-            portal = self._portal
-            if portal is None or (if_idle and self._busy_locked(portal)):
-                return
-            timed_out = not self._cond.wait_for(
-                lambda: self._portal is not portal or not self._busy_locked(portal),
-                timeout=_BOUNDARY_WAIT_SECONDS,
-            )
-            if self._portal is not portal:  # stopped meanwhile (dirty restart)
-                return
-            detached = self._detach_locked()
-        if timed_out:
-            self.stats.add("boundary_wait_timeouts")
-            print(
-                "Warning: test_client request(s) still running at the test "
-                "boundary; cancelling every task on their loop and stopping it",
-                file=sys.stderr,
-            )
-            try:
-                portal.call(_cancel_all_but_own, portal, self.stats)
-            except Exception as exc:
-                self.stats.add("cleanup_errors")
-                print(f"Warning: boundary cancel failed: {exc!r}", file=sys.stderr)
-        self._stop_detached(*detached)
+        deadline = time.monotonic() + _BOUNDARY_WAIT_SECONDS
+        while True:
+            with self._detaching() as detach:
+                with self._cond:
+                    portal = self._portal
+                    if portal is None or (if_idle and self._busy_locked(portal)):
+                        return
+                    timed_out = not self._cond.wait_for(
+                        lambda: self._portal is not portal or not self._busy_locked(portal),
+                        timeout=max(0.0, deadline - time.monotonic()),
+                    )
+                    if self._portal is not portal:  # replaced meanwhile
+                        continue
+                    detach()
+                if timed_out:
+                    self.stats.add("boundary_wait_timeouts")
+                    print(
+                        "Warning: test_client request(s) still running at the test "
+                        "boundary; cancelling every task on their loop and stopping it",
+                        file=sys.stderr,
+                    )
+                    try:
+                        portal.call(_cancel_all_but_own, portal, self.stats)
+                    except Exception as exc:
+                        self.stats.add("cleanup_errors")
+                        print(f"Warning: boundary cancel failed: {exc!r}", file=sys.stderr)
+            return
 
     # -- per request ----------------------------------------------------------------
     def enter(self):
         """Register a request; return (request id, portal). A dirty loop is
         replaced first, but only while no request is in flight on it."""
+        me = threading.get_ident()
         while True:
-            with self._cond:
-                if not (self._dirty and not self._busy_locked(self._portal)):
-                    if (
-                        self.test_thread is not None
-                        and self._in_flight
-                        and threading.get_ident() != self.test_thread
-                    ):
-                        self.stats.add("cross_thread_requests")
-                        print(
-                            "Warning: test_client request from another thread "
-                            "while a request is in flight; mark the test "
-                            "@pytest.mark.per_request_loop",
-                            file=sys.stderr,
-                        )
-                    if self._portal is None:
-                        self._start_locked()
-                    rid = next(self._ids)
-                    self._in_flight[rid] = self._portal
-                    return rid, self._portal
-                detached = self._detach_locked()
-                self.stats.add("dirty_restarts")
-            self._stop_detached(*detached)
+            with self._detaching() as detach:
+                with self._cond:
+                    if not (self._dirty and not self._busy_locked(self._portal)):
+                        if self.test_thread is not None and any(
+                            p is self._portal and thread != me
+                            for p, thread in self._in_flight.values()
+                        ):
+                            self.stats.add("cross_thread_requests")
+                            print(
+                                "Warning: test_client request while a request "
+                                "from another thread is in flight; mark the test "
+                                "@pytest.mark.per_request_loop",
+                                file=sys.stderr,
+                            )
+                        if self._portal is None:
+                            self._start_locked()
+                        rid = next(self._ids)
+                        self._in_flight[rid] = (self._portal, me)
+                        return rid, self._portal
+                    detach()
+                    self.stats.add("dirty_restarts")
 
     def exit(self, rid, portal):
         """End a request: cancel what it left behind, then deregister it. If
@@ -318,19 +368,24 @@ class _TestLoop:
                             file=sys.stderr,
                         )
                         bound_hit = True
+                    else:  # the boundary stopped its loop (already counted)
+                        logger.warning(
+                            "test_client request %s cleanup failed after its loop "
+                            "was stopped under it: %r",
+                            rid,
+                            exc,
+                        )
         finally:
-            detached = None
-            with self._cond:
-                del self._in_flight[rid]
-                if portal is self._portal:
-                    if bound_hit:
-                        self._dirty = True
-                    if self._dirty and not self._busy_locked(portal):
-                        detached = self._detach_locked()
-                        self.stats.add("dirty_restarts")
-                self._cond.notify_all()
-            if detached is not None:
-                self._stop_detached(*detached)
+            with self._detaching() as detach:
+                with self._cond:
+                    del self._in_flight[rid]
+                    if portal is self._portal:
+                        if bound_hit:
+                            self._dirty = True
+                        if self._dirty and not self._busy_locked(portal):
+                            detach()
+                            self.stats.add("dirty_restarts")
+                    self._cond.notify_all()
 
     async def _cleanup(self, rid, portal):
         """Runs on the loop. Cancel the request's own tasks, and, when no other
@@ -349,7 +404,7 @@ class _TestLoop:
                 with self._cond:
                     others = {
                         other
-                        for other, p in self._in_flight.items()
+                        for other, (p, _) in self._in_flight.items()
                         if other != rid and p is portal
                     }
                     targets = []
@@ -397,6 +452,29 @@ class _TestLoop:
 
 def _all_tasks_now():
     return set(asyncio.all_tasks())
+
+
+# What asyncio.Runner reports (to the loop's exception handler) for each task
+# that raised when its shutdown cancelled it. Pinned for CPython 3.13
+# (asyncio.runners._cancel_all_tasks);
+# test_a_task_failing_at_the_loops_final_stop_is_counted fails if it changes.
+_SHUTDOWN_REPORT = "unhandled exception during asyncio.run() shutdown"
+
+
+def _count_shutdown_errors(stats):
+    """Runs on the shared loop once, at its start. A task that raises when the
+    loop's final stop cancels it never reaches ``_retrieve_exceptions``;
+    asyncio.Runner reports it to the loop's exception handler instead. Count
+    those (``cancel_errors``) too, and leave the logging (with the traceback)
+    to the default handler. They are counted on the loop thread before its
+    stop returns, so before the test's teardown compares the counts."""
+
+    def handler(loop, context):
+        if context.get("message") == _SHUTDOWN_REPORT and context.get("exception") is not None:
+            stats.add("cancel_errors")
+        loop.default_exception_handler(context)
+
+    asyncio.get_running_loop().set_exception_handler(handler)
 
 
 def _retrieve_exceptions(tasks, stats):

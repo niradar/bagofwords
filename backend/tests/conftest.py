@@ -255,8 +255,9 @@ def pytest_runtest_teardown(item, nextitem):
     connection outlives the test. Cheap when no request was made.
 
     A failure of the first stop is raised only after the finalizers ran, so
-    ``monkeypatch`` and the rest are always undone; if a finalizer fails too,
-    its error is raised with the first stop's failure attached as a note.
+    ``monkeypatch`` and the rest are always undone; if a finalizer or the
+    second stop fails too, that error is raised with the first stop's failure
+    attached as a note.
 
     The test fails, in its teardown, if any of these happened during it (in
     its body, its fixtures or a stop): a stop gave up waiting for a request
@@ -275,6 +276,13 @@ def pytest_runtest_teardown(item, nextitem):
         watch_test_thread,
     )
 
+    def keep_first_stop_failure(exc):
+        if pre_error is not None:
+            exc.add_note(
+                "The test_client loop's first stop (before the finalizers) "
+                "also failed:\n" + "".join(traceback.format_exception(pre_error))
+            )
+
     pre_error = None
     try:
         stop_test_loop(if_idle=True)
@@ -283,15 +291,14 @@ def pytest_runtest_teardown(item, nextitem):
     try:
         result = yield
     except BaseException as exc:
-        if pre_error is not None:
-            exc.add_note(
-                "The test_client loop's first stop (before the finalizers) "
-                "also failed:\n" + "".join(traceback.format_exception(pre_error))
-            )
+        keep_first_stop_failure(exc)
         raise
     finally:
         try:
             stop_test_loop()
+        except BaseException as exc:
+            keep_first_stop_failure(exc)
+            raise
         finally:
             use_per_request_loop(False)
             watch_test_thread(None)
@@ -659,18 +666,21 @@ def _dispose_async_engine():
 
     # A test_client loop must release its pooled connections (on its own
     # loop) and stop before the engine they belong to is disposed; the
-    # dispose runs even if that stop fails.
+    # dispose runs even if that stop fails. A failed dispose is raised (once
+    # the abandoned sqlite threads are stopped): the fixture that called it
+    # errors rather than run the test on connections left behind.
     try:
         stop_test_loop()
     finally:
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(_dispose())
-            loop.close()
-        except Exception as e:
-            print(f"Warning: Failed to dispose engine: {e}")
-        _stop_abandoned_sqlite_threads()
+            try:
+                loop.run_until_complete(_dispose())
+            finally:
+                loop.close()
+        finally:
+            _stop_abandoned_sqlite_threads()
 
 
 def _stop_abandoned_sqlite_threads():
