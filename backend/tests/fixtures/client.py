@@ -6,8 +6,10 @@ that starts at the test's first request and is stopped at the test boundary
 instead of opened per request. Each request still ends the way it did when it
 had a loop of its own: the tasks it spawned are cancelled when it returns.
 
-``BOW_TEST_PER_REQUEST_LOOP=1`` (or true/yes) restores the old behaviour, one
-loop per request (``_ReleasingTestClient``), for A/B runs and debugging.
+A test that issues requests from more than one thread is marked
+``@pytest.mark.per_request_loop``: its requests each get a loop of their own,
+exactly as with ``_ReleasingTestClient``. ``BOW_TEST_PER_REQUEST_LOOP=1`` (or
+true/yes) restores that for every test, for A/B runs and debugging.
 """
 import asyncio
 import contextlib
@@ -24,22 +26,31 @@ from fastapi.testclient import TestClient
 from main import app
 
 
+@contextlib.contextmanager
+def _releasing_portal(client, open_portal):
+    """One request on a loop of its own (``open_portal`` is Starlette's
+    ``TestClient._portal_factory``). Close the pooled DB connections that
+    loop opened while it is still running — asyncpg can only close a
+    connection on its own loop — so they neither leak nor get offered to the
+    next request's loop."""
+    with open_portal() as portal:
+        try:
+            yield portal
+        finally:
+            if client.portal is None:
+                from app.settings.database import release_test_connections
+
+                portal.call(release_test_connections)
+
+
 class _ReleasingTestClient(TestClient):
     """Each request runs on its own event loop (one blocking portal per
-    request). Close the pooled DB connections that loop opened while it is
-    still running — asyncpg can only close a connection on its own loop —
-    so they neither leak nor get offered to the next request's loop."""
+    request), its pooled connections released at its end."""
 
     @contextlib.contextmanager
     def _portal_factory(self):
-        with super()._portal_factory() as portal:
-            try:
-                yield portal
-            finally:
-                if self.portal is None:
-                    from app.settings.database import release_test_connections
-
-                    portal.call(release_test_connections)
+        with _releasing_portal(self, super()._portal_factory) as portal:
+            yield portal
 
 
 # The request a task belongs to. Set in the calling thread for the duration of
@@ -356,10 +367,21 @@ def per_request_loop_enabled():
     return value.strip().lower() in {"1", "true", "yes"}
 
 
+# Set by the root conftest for the duration of a test marked
+# ``per_request_loop``: its requests each get a loop of their own.
+_per_request_this_test = False
+
+
+def use_per_request_loop(enabled):
+    global _per_request_this_test
+    _per_request_this_test = bool(enabled)
+
+
 class _PersistentLoopTestClient(TestClient):
     """Requests run on the shared per-test loop (``_LOOP``). Each request owns
     the tasks it spawns (``_REQUEST_ID``), and they are cancelled when it ends.
-    Pooled connections are released when the loop stops, not per request."""
+    Pooled connections are released when the loop stops, not per request.
+    In a test marked ``per_request_loop`` it acts as ``_ReleasingTestClient``."""
 
     def __init__(self, *args, test_loop=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -374,6 +396,10 @@ class _PersistentLoopTestClient(TestClient):
     def _portal_factory(self):
         if self.portal is not None:  # inside `with client:` (lifespan)
             yield self.portal
+            return
+        if _per_request_this_test:
+            with _releasing_portal(self, super()._portal_factory) as portal:
+                yield portal
             return
         rid, portal = self._test_loop.enter()
         token = _REQUEST_ID.set(rid)

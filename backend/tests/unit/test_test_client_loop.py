@@ -461,6 +461,48 @@ def test_kill_switch_gives_one_loop_per_request(monkeypatch):
     assert TASKS["k"].done()  # its loop was closed with it
 
 
+@pytest.fixture
+def released(monkeypatch):
+    """Record each release of pooled connections (none open here)."""
+    from app.settings import database
+
+    calls = []
+    real = database.release_test_connections
+
+    async def recording():
+        calls.append(asyncio.get_running_loop())
+        await real()
+
+    monkeypatch.setattr(database, "release_test_connections", recording)
+    return calls
+
+
+@pytest.mark.per_request_loop
+def test_marked_test_gets_a_loop_and_a_release_per_request(released):
+    shared = _PersistentLoopTestClient(app)  # what the session test_client is
+    LOOPS.clear()
+    shared.get("/loop")
+    shared.get("/loop")
+    assert LOOPS[0] is not LOOPS[1]
+    assert all(loop.is_closed() for loop in LOOPS)
+    assert released == LOOPS  # released on each request's own loop
+    assert client_mod._LOOP.portal is None  # the shared loop is never started
+    TASKS.clear()
+    shared.get("/spawn/k")
+    assert TASKS["k"].done()  # its loop was closed with it
+
+
+def test_unmarked_test_shares_one_loop_across_requests(released):
+    shared = _PersistentLoopTestClient(app)
+    LOOPS.clear()
+    shared.get("/loop")
+    shared.get("/loop")
+    assert LOOPS[0] is LOOPS[1]
+    assert not LOOPS[0].is_closed()
+    assert released == []  # released when the loop stops, not per request
+    assert client_mod._LOOP.portal is not None
+
+
 @pytest.mark.parametrize("value", ["1", "true", "YES", " True "])
 def test_kill_switch_values(monkeypatch, value):
     monkeypatch.setenv("BOW_TEST_PER_REQUEST_LOOP", value)

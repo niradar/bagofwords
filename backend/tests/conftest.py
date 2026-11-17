@@ -202,6 +202,22 @@ def pytest_configure(config):
         "flagged default_enabled, as it does in production. Off everywhere "
         "else — see no_default_skills.",
     )
+    config.addinivalue_line(
+        "markers",
+        "per_request_loop: give each test_client request of this test an "
+        "event loop of its own instead of the test's shared loop. Required "
+        "for a test that issues test_client requests from more than one "
+        "thread (see tests/fixtures/client.py).",
+    )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Before the test's fixtures: choose its ``test_client`` loop mode."""
+    from tests.fixtures.client import use_per_request_loop
+
+    use_per_request_loop(item.get_closest_marker("per_request_loop") is not None)
+
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item, nextitem):
@@ -221,7 +237,7 @@ def pytest_runtest_teardown(item, nextitem):
     A failure of the first stop is raised only after the finalizers ran, so
     ``monkeypatch`` and the rest are always undone.
     """
-    from tests.fixtures.client import stop_test_loop
+    from tests.fixtures.client import stop_test_loop, use_per_request_loop
 
     pre_error = None
     try:
@@ -231,7 +247,10 @@ def pytest_runtest_teardown(item, nextitem):
     try:
         result = yield
     finally:
-        stop_test_loop()
+        try:
+            stop_test_loop()
+        finally:
+            use_per_request_loop(False)
     if pre_error is not None:
         raise pre_error
     return result
