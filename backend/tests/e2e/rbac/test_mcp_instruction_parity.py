@@ -63,11 +63,14 @@ class _Twins:
 
     Creating a rule publishes a build (~0.2s each on Postgres), and most cells
     are refusals that leave both rules as they were, so a pair is handed to the
-    next cell only when both paths refused AND both rows read back exactly as
-    they were created: every field the web app returns, including the current
-    version, build, status and ``updated_at``. Anything that changed either row
-    (an allowed edit, a staged suggestion, a mismatch) retires the pair, and the
-    next cell gets a fresh one."""
+    next cell only when both paths refused AND both rows, read back after the
+    cell, are exactly what the create call returned for them (the create
+    response, which has the shape of ``GET /api/instructions/{id}``): every
+    field, including the current version, build, status and ``updated_at``.
+    Anything that changed either row (an allowed edit, a staged suggestion, a
+    mismatch) retires the pair, and the next cell gets a fresh one.
+
+    ``created`` and ``reused`` count pairs, so a grid can report them."""
 
     def __init__(self, world, key):
         self.world, self.key = world, key
@@ -75,6 +78,7 @@ class _Twins:
         self.author = M.AGENT_OWNER if key == "inst_owned" else M.ORG_ADMIN
         self.reader = world.truth_reader(self.scope)
         self._spare = self._taken = None
+        self.created = self.reused = 0
 
     def take(self):
         if self._spare is None:
@@ -82,6 +86,9 @@ class _Twins:
             self._spare = tuple(
                 self.world.seed_instruction_as(self.author, text, self.scope) for _ in range(2)
             )
+            self.created += 1
+        else:
+            self.reused += 1
         pair, self._spare = self._spare, None
         self._taken = pair
         return pair[0]["id"], pair[1]["id"], self.reader
@@ -89,6 +96,16 @@ class _Twins:
     def give_back_if_untouched(self, both_refused, body_a, body_b):
         if both_refused and (body_a, body_b) == self._taken:
             self._spare = self._taken
+
+
+def _record_reuse(record_property, grid, all_twins):
+    """Attach how many pairs a grid created and reused (JUnit properties and
+    stdout), so a silent drop to zero reuse shows up in CI's results."""
+    created = sum(t.created for t in all_twins)
+    reused = sum(t.reused for t in all_twins)
+    record_property(f"{grid}_pairs_created", created)
+    record_property(f"{grid}_pairs_reused", reused)
+    print(f"{grid}: {created} pair(s) created, {reused} reused")
 
 
 def _rest(world, persona, method, path, body=None):
@@ -110,10 +127,12 @@ EDITS = {
 }
 
 
-def test_edit_matches_the_web_app_for_every_persona(world):
+def test_edit_matches_the_web_app_for_every_persona(world, record_property):
     mismatches = []
+    all_twins = []
     for key in M.INSTRUCTION_TARGETS:
         twins = _Twins(world, key)
+        all_twins.append(twins)
         for persona in M.ALL:
             for name, (rest_body, mcp_args) in EDITS.items():
                 a, b, reader = twins.take()
@@ -128,6 +147,7 @@ def test_edit_matches_the_web_app_for_every_persona(world):
                 if sa != sb:
                     mismatches.append(f"{label}: web app left {sa}, MCP left {sb}")
                 twins.give_back_if_untouched(not rest_ok and not res.ok, ba, bb)
+    _record_reuse(record_property, "edit", all_twins)
     _report(mismatches, "edit parity")
 
 
@@ -184,10 +204,12 @@ def test_create_matches_the_web_app_for_every_persona(world):
 
 # ── delete ───────────────────────────────────────────────────────────────
 
-def test_delete_matches_the_web_app_for_every_persona(world):
+def test_delete_matches_the_web_app_for_every_persona(world, record_property):
     mismatches = []
+    all_twins = []
     for key in M.INSTRUCTION_TARGETS:
         twins = _Twins(world, key)
+        all_twins.append(twins)
         for persona in M.ALL:
             a, b, reader = twins.take()
             rest_ok = _rest(world, persona, "delete", f"/api/instructions/{a}").status_code == 200
@@ -199,6 +221,7 @@ def test_delete_matches_the_web_app_for_every_persona(world):
             if (ba is None) != (bb is None):
                 mismatches.append(f"{label}: web app gone={ba is None}, MCP gone={bb is None}")
             twins.give_back_if_untouched(not rest_ok and not res.ok, ba, bb)
+    _record_reuse(record_property, "delete", all_twins)
     _report(mismatches, "delete parity")
 
 

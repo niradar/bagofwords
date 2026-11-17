@@ -160,8 +160,9 @@ def test_edit_instruction_cannot_widen_scope_past_authority(world):
 
 # ── instructions: delete ─────────────────────────────────────────────────
 
-def test_delete_instruction_follows_instruction_authority(world):
+def test_delete_instruction_follows_instruction_authority(world, record_property):
     mismatches = []
+    created = reused = 0
     for key, scope in M.INSTRUCTION_TARGETS.items():
         allowed = M.INSTRUCTION_WRITE_ALLOWED[key]
         author = M.AGENT_OWNER if key == "inst_owned" else M.ORG_ADMIN
@@ -175,8 +176,10 @@ def test_delete_instruction_follows_instruction_authority(world):
             if inst_id is None:
                 inst_id = world.create_instruction_as(author, f"del {key} {uuid.uuid4().hex[:6]}", scope)
                 before = world.rest_get_instruction(reader, inst_id)
+                created += 1
             else:
                 before = after   # the kept rule, as read at the end of the last cell
+                reused += 1
             assert before.status_code == 200
             res = world.mcp(persona).call("delete_instruction", {"instruction_id": inst_id})
             after = world.rest_get_instruction(reader, inst_id)
@@ -193,6 +196,10 @@ def test_delete_instruction_follows_instruction_authority(world):
                     mismatches.append(f"{persona} {key}: refused path still deleted it")
             if not (res.refused and after.status_code == 200 and after.json() == before.json()):
                 inst_id = None
+    # Visible in JUnit and stdout, so a silent drop to zero reuse shows up.
+    record_property("delete_rules_created", created)
+    record_property("delete_rules_reused", reused)
+    print(f"delete_instruction: {created} rule(s) created, {reused} reused")
     _report(mismatches, "delete_instruction")
 
 
