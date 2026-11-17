@@ -265,10 +265,9 @@ def test_boundary_timeout_cancels_the_stuck_request_and_stops(client, loop, monk
     thread, result = _in_thread(lambda: client.get("/hold/b"))
     assert started.wait(5)
 
-    t0 = time.monotonic()
     loop.stop()
-    assert time.monotonic() - t0 < 3
     assert loop.portal is None
+    assert TASKS["b"].cancelled()  # cancelled by the stop, not left to Runner
     thread.join(5)
     assert not thread.is_alive()
     assert "error" in result  # the stuck request failed in its own thread
@@ -276,11 +275,11 @@ def test_boundary_timeout_cancels_the_stuck_request_and_stops(client, loop, monk
     counts = loop.stats.snapshot()
     assert counts["boundary_wait_timeouts"] == 1
     assert counts["cleanup_errors"] == 0  # its cleanup found the loop gone
-    # Later stops don't wait on it, and requests get a fresh loop.
+    # Requests get a fresh loop, and a later stop doesn't wait on the old one.
     assert client.get("/loop").status_code == 200
-    t0 = time.monotonic()
     loop.stop()
-    assert time.monotonic() - t0 < 1
+    assert loop.portal is None
+    assert loop.stats.snapshot()["boundary_wait_timeouts"] == 1
 
 
 def test_bound_hit_alone_replaces_the_loop_on_the_next_request(client, loop, monkeypatch):
@@ -320,7 +319,57 @@ def test_request_id_reset_tolerates_another_context(client):
 
 # -- wiring into the suite: these use the real shared loop -----------------------
 
-_RECORDED = {}
+_LEFT_IN_TEARDOWN = set()
+
+
+@pytest.fixture(autouse=True)
+def _no_shared_loop_survives_a_test():
+    """Order-independent check of the root conftest's teardown hook: every
+    test of this module starts with no shared loop, and every one ends by
+    starting one in a fixture teardown (after the hook's first stop), which
+    the hook's second stop must end. Any test that follows another of this
+    module on the same worker fails if either stop is missing."""
+    assert client_mod._LOOP.portal is None
+    assert not any(t.is_alive() for t in _LEFT_IN_TEARDOWN)
+    yield
+    before = _portal_threads()
+    _PersistentLoopTestClient(app).get("/loop")
+    _LEFT_IN_TEARDOWN.clear()
+    _LEFT_IN_TEARDOWN.update(_portal_threads() - before)
+
+
+@pytest.fixture
+def loop_already_stopped_in_teardown():
+    """Teardown runs after the hook's first stop: the loop the test body
+    started must already be gone."""
+    yield
+    assert client_mod._LOOP.portal is None
+
+
+def test_loop_of_the_test_body_is_stopped_before_the_finalizers(
+    loop_already_stopped_in_teardown,
+):
+    _PersistentLoopTestClient(app).get("/loop")
+    assert client_mod._LOOP.portal is not None
+
+
+@pytest.fixture
+def threaded_request_ended_in_teardown():
+    """A fixture that ends its own threaded request in its teardown: the
+    hook's first stop must leave the loop running for it."""
+    TASKS.clear()
+    started, gate = _gate("t")
+    thread, result = _in_thread(lambda: _PersistentLoopTestClient(app).get("/hold/t"))
+    assert started.wait(5)
+    yield
+    gate.set()
+    thread.join(5)
+    assert "error" not in result
+    assert result["value"].json() == {"alive": True}
+
+
+def test_teardown_may_end_its_own_request_in_flight(threaded_request_ended_in_teardown):
+    assert client_mod._LOOP.in_flight == 1
 
 
 def test_dispose_async_engine_stops_a_running_loop():
@@ -332,44 +381,24 @@ def test_dispose_async_engine_stops_a_running_loop():
     assert client_mod._LOOP.portal is None
 
 
-def test_teardown_hook_stops_the_loop_before_and_after_finalizers():
-    from tests.conftest import pytest_runtest_teardown
+def test_teardown_hook_runs_finalizers_even_if_its_first_stop_fails(monkeypatch):
+    from tests import conftest
 
-    shared = _PersistentLoopTestClient(app)
-    shared.get("/loop")
-    hook = pytest_runtest_teardown(None, None)
-    next(hook)  # before the fixture finalizers
-    assert client_mod._LOOP.portal is None
-    shared.get("/loop")  # a finalizer making a request
-    assert client_mod._LOOP.portal is not None
-    with pytest.raises(StopIteration):
-        next(hook)  # after them
-    assert client_mod._LOOP.portal is None
+    calls = []
 
+    def flaky_stop(if_idle=False):
+        calls.append(if_idle)
+        if if_idle:
+            raise RuntimeError("first stop failed")
 
-@pytest.fixture
-def request_in_teardown():
-    yield
-    before = _portal_threads()
-    _PersistentLoopTestClient(app).get("/loop")
-    _RECORDED["teardown_threads"] = _portal_threads() - before
-
-
-def test_wiring_1_loop_started_by_a_test_and_its_teardown(request_in_teardown):
-    before = _portal_threads()
-    _PersistentLoopTestClient(app).get("/loop")
-    _RECORDED["test_threads"] = _portal_threads() - before
-    _RECORDED["portal"] = client_mod._LOOP.portal
-    assert _RECORDED["portal"] is not None
-
-
-def test_wiring_2_loop_is_gone_at_the_start_of_the_next_test():
-    if "portal" not in _RECORDED:
-        pytest.skip("the previous test ran in another worker")
-    assert client_mod._LOOP.portal is None
-    threads = _RECORDED["test_threads"] | _RECORDED["teardown_threads"]
-    assert len(threads) == 2
-    assert not any(t.is_alive() for t in threads)
+    # Patched only inside, since the real hook runs before monkeypatch's undo.
+    with monkeypatch.context() as patch:
+        patch.setattr(client_mod, "stop_test_loop", flaky_stop)
+        hook = conftest.pytest_runtest_teardown(None, None)
+        next(hook)  # the finalizers run here
+        with pytest.raises(RuntimeError, match="first stop failed"):
+            hook.send(None)
+    assert calls == [True, False]
 
 
 def test_kill_switch_gives_one_loop_per_request(monkeypatch):

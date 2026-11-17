@@ -166,15 +166,16 @@ class _TestLoop:
         cm.__exit__(None, None, None)
         self.stats.add("portal_stops")
 
-    def stop(self):
-        """Test boundary: wait (at most _BOUNDARY_WAIT_SECONDS) for requests in
+    def stop(self, if_idle=False):
+        """With ``if_idle``, stop only if no request is in flight on the loop
+        (else leave it running). Otherwise: wait (at most _BOUNDARY_WAIT_SECONDS) for requests in
         flight on the loop, then release its connections and stop it. On a
         timeout every task left on the loop is cancelled first (waiting at most
         _BOUNDARY_CANCEL_SECONDS); the stuck request then fails in its own
         thread and its cleanup finds the loop gone."""
         with self._cond:
             portal = self._portal
-            if portal is None:
+            if portal is None or (if_idle and self._busy_locked(portal)):
                 return
             timed_out = not self._cond.wait_for(
                 lambda: self._portal is not portal or not self._busy_locked(portal),
@@ -323,11 +324,12 @@ _STATS = _LoopStats()
 _LOOP = _TestLoop(_STATS)
 
 
-def stop_test_loop():
+def stop_test_loop(if_idle=False):
     """Stop the shared test loop if one is running (test teardown, before an
-    engine dispose, session end). Cheap when none is."""
+    engine dispose, session end). Cheap when none is. With ``if_idle``, leave
+    it running while a request is in flight on it."""
     if _LOOP.portal is not None:
-        _LOOP.stop()
+        _LOOP.stop(if_idle=if_idle)
 
 
 def loop_stats_worker_id(config):

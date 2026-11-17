@@ -203,23 +203,38 @@ def pytest_configure(config):
         "else — see no_default_skills.",
     )
 
-@pytest.hookimpl(hookwrapper=True)
+@pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item, nextitem):
     """End the test's ``test_client`` event loop at the test boundary.
 
-    Requests of one test share a loop (see tests/fixtures/client.py). It is
-    stopped (after its in-flight requests, with its pooled connections
-    released on the loop) before the test's fixture finalizers run, so work a
-    request left in executor threads is joined while the test's mocks are
-    still in place, as when every request had its own loop; and again after
-    them, in case a fixture's teardown made requests. No loop, task, executor
-    thread or connection outlives the test. Cheap when no request was made.
+    Requests of one test share a loop (see tests/fixtures/client.py). Before
+    the test's fixture finalizers run, an idle loop is stopped (its pooled
+    connections released on the loop first), so work a request left in
+    executor threads is joined while the test's mocks are still in place, as
+    when every request had its own loop. A loop with a request still in flight
+    is left running then: a fixture may end its own threaded request in its
+    teardown. After the finalizers the loop is stopped in any case, waiting
+    for requests in flight (see ``_TestLoop.stop``), which also covers
+    fixture teardowns that made requests. No loop, task, executor thread or
+    connection outlives the test. Cheap when no request was made.
+
+    A failure of the first stop is raised only after the finalizers ran, so
+    ``monkeypatch`` and the rest are always undone.
     """
     from tests.fixtures.client import stop_test_loop
 
-    stop_test_loop()
-    yield
-    stop_test_loop()
+    pre_error = None
+    try:
+        stop_test_loop(if_idle=True)
+    except BaseException as exc:
+        pre_error = exc
+    try:
+        result = yield
+    finally:
+        stop_test_loop()
+    if pre_error is not None:
+        raise pre_error
+    return result
 
 
 def pytest_sessionfinish(session, exitstatus):
